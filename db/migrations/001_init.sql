@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   work_type TEXT NOT NULL CHECK (work_type IN ('Лабораторная', 'Курсовая', 'Дипломная', 'Практическая', 'СРС')),
   title TEXT NOT NULL,
   instructions TEXT NOT NULL,
-  template_version TEXT NOT NULL DEFAULT 'v1.0-demo',
+  template_version TEXT NOT NULL DEFAULT 'editable-1',
   deadline_at TIMESTAMPTZ NOT NULL,
   resubmit_deadline_at TIMESTAMPTZ,
   late_policy TEXT NOT NULL DEFAULT 'allow_late' CHECK (late_policy IN ('allow_late', 'block_after_deadline')),

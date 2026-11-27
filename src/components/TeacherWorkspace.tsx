@@ -892,7 +892,7 @@ export const TeacherWorkspace: React.FC<TeacherWorkspaceProps> = ({
                 required
                 value={asgTitle}
                 onChange={(e) => setAsgTitle(e.target.value)}
-                placeholder="Лабораторная №2: Тестирование API"
+                placeholder="Название задания"
                 className="rounded-lg border border-outline-variant px-3 py-2"
               />
             </label>

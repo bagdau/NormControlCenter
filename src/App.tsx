@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import {
   ForbiddenError,
   NetworkOfflineError,
@@ -7,13 +7,8 @@ import {
   formatAlmatyShortTime,
   setCsrfToken,
 } from './api/client';
-import { AdminWorkspace } from './components/AdminWorkspace';
-import { HelpView } from './components/HelpView';
 import { LoginView } from './components/LoginView';
 import { ReceiptModal } from './components/ReceiptModal';
-import { StandardsView } from './components/StandardsView';
-import { StudentWorkspace } from './components/StudentWorkspace';
-import { TeacherWorkspace } from './components/TeacherWorkspace';
 import {
   HealthInfoDTO,
   PublicUserDTO,
@@ -24,6 +19,12 @@ import {
   UILang,
   UserRole,
 } from './types';
+
+const AdminWorkspace = lazy(() => import('./components/AdminWorkspace').then((module) => ({ default: module.AdminWorkspace })));
+const HelpView = lazy(() => import('./components/HelpView').then((module) => ({ default: module.HelpView })));
+const StandardsView = lazy(() => import('./components/StandardsView').then((module) => ({ default: module.StandardsView })));
+const StudentWorkspace = lazy(() => import('./components/StudentWorkspace').then((module) => ({ default: module.StudentWorkspace })));
+const TeacherWorkspace = lazy(() => import('./components/TeacherWorkspace').then((module) => ({ default: module.TeacherWorkspace })));
 
 interface NavTabItem {
   id: RoleNavTab;
@@ -65,8 +66,6 @@ const DEFAULT_TAB_BY_ROLE: Record<UserRole, RoleNavTab> = {
 export default function App() {
   const [lang, setLang] = useState<UILang>('ru');
   const [health, setHealth] = useState<HealthInfoDTO | null>(null);
-  const [demoAccounts, setDemoAccounts] = useState<PublicUserDTO[]>([]);
-  const [demoDefaultPassword, setDemoDefaultPassword] = useState<string>('');
   const [user, setUser] = useState<PublicUserDTO | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [activeTab, setActiveTab] = useState<RoleNavTab>('student_assignments');
@@ -82,6 +81,27 @@ export default function App() {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const mobileMoreTouchY = useRef<number | null>(null);
+  const passwordDialogRef = useRef<HTMLFormElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!changePasswordOpen) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    passwordInputRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setChangePasswordOpen(false);
+      if (event.key !== 'Tab' || !passwordDialogRef.current) return;
+      const focusable = Array.from(passwordDialogRef.current.querySelectorAll<HTMLElement>('input, button:not(:disabled)'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => { document.removeEventListener('keydown', onKeyDown); previouslyFocused?.focus(); };
+  }, [changePasswordOpen]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -116,11 +136,6 @@ export default function App() {
       try {
         const h = await api.getHealth();
         setHealth(h);
-        if (h.allowDemoPreviewAccounts) {
-          const demo = await api.getDemoAccounts();
-          setDemoAccounts(demo.accounts);
-          setDemoDefaultPassword(demo.defaultPassword);
-        }
       } catch {
         setNetworkError('Сервер API недоступен. Проверьте подключение.');
       }
@@ -185,7 +200,7 @@ export default function App() {
     }
   };
 
-  if (authChecking) return <div className="min-h-screen flex items-center justify-center" role="status">Проверка сессии…</div>;
+  if (authChecking) return <div className="min-h-screen flex items-center justify-center gap-3 text-on-surface-variant" role="status"><span className="material-symbols-outlined animate-spin">progress_activity</span>Проверка сессии…</div>;
 
   if (!user) {
     return (
@@ -193,8 +208,6 @@ export default function App() {
         lang={lang}
         onToggleLang={setLang}
         health={health}
-        demoAccounts={demoAccounts}
-        demoDefaultPassword={demoDefaultPassword}
         onLogin={handleLogin}
         sessionExpiredMessage={sessionExpiredMessage}
         networkError={networkError}
@@ -203,33 +216,38 @@ export default function App() {
   }
 
   const tabs = ROLE_TABS[user.role];
+  const mobilePrimaryTabs = tabs.length > 4 ? tabs.slice(0, 4) : tabs;
+  const mobileMoreTabs = tabs.length > 4 ? tabs.slice(4) : [];
+  const activeTabTitle = tabs.find((tab) => tab.id === activeTab);
 
   return (
-    <div className="min-h-screen bg-surface text-on-surface flex flex-col lg:flex-row">
+    <div className="app-shell min-h-screen bg-surface text-on-surface flex flex-col lg:flex-row">
+      <a href="#main-content" className="skip-link">{lang === 'kz' ? 'Мазмұнға өту' : 'Перейти к содержанию'}</a>
       {/* Desktop Left Sidebar (>= 1024px) */}
-      <aside className="hidden lg:flex lg:w-64 lg:shrink-0 lg:flex-col bg-surface-container-lowest border-r border-outline-variant/50 p-4 justify-between">
+      <aside className="app-sidebar hidden lg:flex lg:w-72 lg:shrink-0 lg:flex-col bg-surface-container-lowest border-r border-outline-variant/50 px-4 py-6 justify-between">
         <div className="flex flex-col gap-5">
           <div className="flex items-center gap-3 px-2 pt-1">
-            <div className="w-9 h-9 rounded-lg bg-primary text-on-primary flex items-center justify-center shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-primary text-on-primary flex items-center justify-center shrink-0 shadow-sm">
               <span className="material-symbols-outlined text-[20px]">verified_user</span>
             </div>
             <div className="min-w-0">
-              <p className="font-display font-bold text-[15px] text-primary leading-tight truncate">
-                {lang === 'kz' ? 'НормБақылау' : 'НормКонтроль'}
+              <p className="font-display font-semibold text-[15px] text-on-surface leading-tight truncate">
+                {lang === 'kz' ? 'НормБақылауОрталығы' : 'НормКонтрольЦентр'}
               </p>
-              <p className="text-[11px] text-on-surface-variant truncate">Шымкент · UTC+5</p>
+              <p className="text-[11px] text-on-surface-variant truncate">Учебные работы</p>
             </div>
           </div>
 
-          <nav aria-label="Основная навигация" className="flex flex-col gap-1">
+          <nav aria-label="Основная навигация" className="flex flex-col gap-1 mt-3">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-colors cursor-pointer text-left ${
+                aria-current={activeTab === tab.id ? 'page' : undefined}
+                className={`app-nav-item w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[13px] font-semibold transition-colors cursor-pointer text-left ${
                   activeTab === tab.id
-                    ? 'bg-primary text-on-primary'
+                    ? 'bg-primary-fixed text-primary'
                     : 'text-on-surface hover:bg-surface-container-low'
                 }`}
               >
@@ -241,17 +259,17 @@ export default function App() {
         </div>
 
         <div className="flex flex-col gap-3 border-t border-outline-variant/40 pt-4">
-          <div className="bg-surface-container-low rounded-xl p-3 text-[12px]">
+          <div className="bg-surface-container-low rounded-2xl p-3.5 text-[12px]">
             <p className="font-bold text-on-surface truncate">{user.shortName}</p>
             <p className="text-on-surface-variant font-mono text-[11px] truncate">
               {user.role} {user.groupName ? `· ${user.groupName}` : ''}
             </p>
           </div>
-          <button type="button" onClick={() => setChangePasswordOpen(true)} className="w-full py-2 px-3 rounded-lg border border-outline-variant text-[12px] font-semibold cursor-pointer">Сменить пароль</button>
+          <button type="button" onClick={() => setChangePasswordOpen(true)} className="w-full min-h-11 py-2 px-3 rounded-xl border border-outline-variant text-[12px] font-semibold cursor-pointer">Сменить пароль</button>
           <button
             type="button"
             onClick={handleLogout}
-            className="w-full py-2 px-3 rounded-lg border border-outline-variant text-[12px] font-semibold hover:bg-error-container hover:text-on-error-container transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+            className="w-full min-h-11 py-2 px-3 rounded-xl border border-outline-variant text-[12px] font-semibold hover:bg-error-container hover:text-on-error-container transition-colors cursor-pointer flex items-center justify-center gap-1.5"
           >
             <span className="material-symbols-outlined text-[16px]">logout</span>
             <span>{lang === 'kz' ? 'Шығу' : 'Выйти'}</span>
@@ -260,11 +278,11 @@ export default function App() {
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 min-w-0 flex flex-col pb-20 lg:pb-6">
+      <div className="flex-1 min-w-0 flex flex-col pb-24 lg:pb-6">
         {/* Top Utility Header */}
-        <header className="bg-surface-container-lowest border-b border-outline-variant/40 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2">
+        <header className="app-topbar bg-surface-container-lowest border-b border-outline-variant/40 px-4 sm:px-7 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="lg:hidden font-display font-bold text-[15px] text-primary">
+            <span className="lg:hidden font-display font-semibold text-[15px] text-on-surface">
               {lang === 'kz' ? 'НормБақылау' : 'НормКонтроль'}
             </span>
             <span className="hidden sm:inline text-[12px] text-on-surface-variant">
@@ -274,13 +292,14 @@ export default function App() {
 
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-mono text-on-surface-variant hidden sm:inline">
-              Алматы/Шымкент {shymkentTimeShort}
+              UTC+5 · {shymkentTimeShort}
             </span>
-            <div className="flex rounded-lg overflow-hidden border border-outline-variant/60">
+            <div className="flex rounded-xl overflow-hidden border border-outline-variant/60" role="group" aria-label="Язык интерфейса">
               <button
                 type="button"
                 onClick={() => setLang('ru')}
-                className={`px-2 py-1 text-[11px] font-bold cursor-pointer ${
+                aria-pressed={lang === 'ru'}
+                className={`min-w-11 min-h-10 px-2 py-1 text-[11px] font-bold cursor-pointer ${
                   lang === 'ru' ? 'bg-primary text-on-primary' : 'bg-white text-on-surface-variant'
                 }`}
               >
@@ -289,7 +308,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setLang('kz')}
-                className={`px-2 py-1 text-[11px] font-bold cursor-pointer ${
+                aria-pressed={lang === 'kz'}
+                className={`min-w-11 min-h-10 px-2 py-1 text-[11px] font-bold cursor-pointer ${
                   lang === 'kz' ? 'bg-primary text-on-primary' : 'bg-white text-on-surface-variant'
                 }`}
               >
@@ -299,14 +319,14 @@ export default function App() {
             <button
               type="button"
               onClick={() => setChangePasswordOpen(true)}
-              className="lg:hidden px-2.5 py-1 rounded-lg border border-outline-variant text-[11px] font-semibold cursor-pointer"
+              className="lg:hidden min-h-10 px-2.5 py-1 rounded-xl border border-outline-variant text-[11px] font-semibold cursor-pointer"
             >
               Пароль
             </button>
             <button
               type="button"
               onClick={handleLogout}
-              className="lg:hidden px-2.5 py-1 rounded-lg border border-outline-variant text-[11px] font-semibold cursor-pointer"
+              className="lg:hidden min-h-10 px-2.5 py-1 rounded-xl border border-outline-variant text-[11px] font-semibold cursor-pointer"
             >
               Выход
             </button>
@@ -315,12 +335,6 @@ export default function App() {
 
         {/* System Status / Network Banners */}
         <div className="px-4 sm:px-6 pt-4 flex flex-col gap-2">
-          {health?.demoBanner && (
-            <div className="bg-tertiary-fixed/70 text-on-tertiary-fixed rounded-lg px-3 py-2 text-[12px] flex flex-wrap items-center justify-between gap-2">
-              <span>{health.demoBanner}</span>
-              <span className="font-mono text-[11px]">Не заменяет Платонус</span>
-            </div>
-          )}
 
           {networkError && (
             <div
@@ -340,7 +354,12 @@ export default function App() {
         </div>
 
         {/* Active Role View */}
-        <main className="p-4 sm:p-6 max-w-7xl w-full mx-auto flex-1">
+        <main id="main-content" tabIndex={-1} className="p-4 sm:p-7 lg:p-8 max-w-7xl w-full mx-auto flex-1 min-w-0">
+          <div className="app-page-heading mb-6">
+            <p className="text-[11px] uppercase tracking-[0.14em] font-semibold text-on-surface-variant mb-1">{user.role === 'student' ? (lang === 'kz' ? 'Студент' : 'Студент') : user.role === 'teacher' ? (lang === 'kz' ? 'Оқытушы' : 'Преподаватель') : (lang === 'kz' ? 'Әкімші' : 'Администратор')}</p>
+            <h1 className="font-display font-semibold text-[25px] sm:text-[30px] leading-tight tracking-tight">{activeTabTitle ? (lang === 'kz' ? activeTabTitle.labelKz : activeTabTitle.labelRu) : ''}</h1>
+          </div>
+          <Suspense fallback={<div role="status" className="rounded-2xl bg-surface-container-lowest border border-outline-variant px-5 py-6 text-on-surface-variant">Загрузка раздела…</div>}>
           {user.role === 'student' &&
             activeTab !== 'standards' &&
             activeTab !== 'help' && (
@@ -382,21 +401,36 @@ export default function App() {
             <StandardsView lang={lang} onShowToast={showToast} />
           )}
 
-          {activeTab === 'help' && <HelpView lang={lang} onShowToast={showToast} />}
+          {activeTab === 'help' && <HelpView lang={lang} />}
+          </Suspense>
         </main>
       </div>
 
       {/* Tablet & Mobile Bottom Navigation (< 1024px) */}
+      {mobileMoreOpen && mobileMoreTabs.length > 0 && (
+        <div className="mobile-more-panel lg:hidden" role="group" aria-label={lang === 'kz' ? 'Қосымша бөлімдер' : 'Другие разделы'}
+          onTouchStart={(event) => { mobileMoreTouchY.current = event.touches[0].clientY; }}
+          onTouchEnd={(event) => { const start = mobileMoreTouchY.current; mobileMoreTouchY.current = null; if (start !== null && event.changedTouches[0].clientY - start > 70) setMobileMoreOpen(false); }}
+        >
+          {mobileMoreTabs.map((tab) => (
+            <button key={tab.id} type="button" onClick={() => { setActiveTab(tab.id); setMobileMoreOpen(false); }} aria-current={activeTab === tab.id ? 'page' : undefined} className={`mobile-more-item ${activeTab === tab.id ? 'is-active' : ''}`}>
+              <span className="material-symbols-outlined" aria-hidden="true">{tab.icon}</span>
+              {lang === 'kz' ? tab.labelKz : tab.labelRu}
+            </button>
+          ))}
+        </div>
+      )}
       <nav
         aria-label="Мобильная навигация"
-        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-surface-container-lowest border-t border-outline-variant/60 flex items-center justify-around px-1 py-1.5 pb-safe"
+        className="app-mobile-nav lg:hidden fixed bottom-0 inset-x-0 z-40 bg-surface-container-lowest border-t border-outline-variant/60 flex items-center justify-around px-1 py-1.5 pb-safe"
       >
-        {tabs.slice(0, 5).map((tab) => (
+        {mobilePrimaryTabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex flex-col items-center justify-center min-w-0 flex-1 py-1 rounded-lg text-[10px] font-semibold cursor-pointer ${
+            onClick={() => { setActiveTab(tab.id); setMobileMoreOpen(false); }}
+            aria-current={activeTab === tab.id ? 'page' : undefined}
+            className={`flex flex-col items-center justify-center min-w-0 min-h-14 flex-1 py-1 rounded-xl text-[10px] font-semibold cursor-pointer ${
               activeTab === tab.id ? 'text-primary bg-primary-fixed/40' : 'text-on-surface-variant'
             }`}
           >
@@ -406,14 +440,15 @@ export default function App() {
             </span>
           </button>
         ))}
+        {mobileMoreTabs.length > 0 && <button type="button" onClick={() => setMobileMoreOpen((open) => !open)} aria-expanded={mobileMoreOpen} aria-label={lang === 'kz' ? 'Қосымша бөлімдер' : 'Другие разделы'} className={`flex flex-col items-center justify-center min-w-0 min-h-14 flex-1 py-1 rounded-xl text-[10px] font-semibold cursor-pointer ${mobileMoreOpen || mobileMoreTabs.some((tab) => tab.id === activeTab) ? 'text-primary bg-primary-fixed/70' : 'text-on-surface-variant'}`}><span className="material-symbols-outlined text-[19px]">more_horiz</span><span>{lang === 'kz' ? 'Тағы' : 'Ещё'}</span></button>}
       </nav>
 
       {/* Receipt Modal */}
       {changePasswordOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" role="presentation">
-          <form onSubmit={handleChangePassword} role="dialog" aria-modal="true" aria-label="Смена пароля" className="bg-surface-container-lowest rounded-xl p-5 w-full max-w-sm flex flex-col gap-3">
+          <form ref={passwordDialogRef} onSubmit={handleChangePassword} role="dialog" aria-modal="true" aria-label="Смена пароля" className="bg-surface-container-lowest rounded-2xl p-5 w-full max-w-sm flex flex-col gap-3 shadow-2xl">
             <h2 className="font-display font-bold text-[18px]">Сменить пароль</h2>
-            <label className="text-[13px]">Текущий пароль<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-outline-variant px-3 py-2" /></label>
+            <label className="text-[13px]">Текущий пароль<input ref={passwordInputRef} type="password" autoComplete="current-password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-outline-variant px-3 py-2" /></label>
             <label className="text-[13px]">Новый пароль (не менее 16 символов)<input type="password" autoComplete="new-password" minLength={16} required value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-outline-variant px-3 py-2" /></label>
             <div className="flex gap-2 justify-end"><button type="button" onClick={() => setChangePasswordOpen(false)} className="px-3 py-2 rounded-lg border border-outline-variant">Отмена</button><button type="submit" className="px-3 py-2 rounded-lg bg-primary text-on-primary">Сохранить</button></div>
           </form>

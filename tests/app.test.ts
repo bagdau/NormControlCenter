@@ -6,21 +6,25 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { createApp } from '../server/app';
 import { generateLabDocxBuffer, generateLabPdfBuffer } from '../server/docGenerator';
-import { DEMO_PASSWORD_DEFAULT, DemoRepository } from '../server/repositories/repository';
+import { FIXTURE_PASSWORD, FixtureRepository } from './fixture-repository';
 import { LabReportSnapshot } from '../server/types';
 import { computeSha256 } from '../server/security';
 
 let server: http.Server;
 let baseUrl: string;
 let tempUploadDir: string;
-let repo: DemoRepository;
+let repo: FixtureRepository;
+type AuthSession = { cookie: string; csrfToken: string };
 
 async function jsonReq(
   route: string,
-  opts: { method?: string; token?: string; body?: unknown } = {}
+  opts: { method?: string; token?: AuthSession; body?: unknown } = {}
 ) {
   const headers: Record<string, string> = {};
-  if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`;
+  if (opts.token) {
+    headers.Cookie = opts.token.cookie;
+    if (opts.method && opts.method !== 'GET') headers['X-CSRF-Token'] = opts.token.csrfToken;
+  }
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
 
   const res = await fetch(`${baseUrl}${route}`, {
@@ -38,18 +42,20 @@ async function jsonReq(
   return { status: res.status, json, headers: res.headers };
 }
 
-async function loginAs(email: string): Promise<string> {
+async function loginAs(email: string): Promise<AuthSession> {
   const res = await jsonReq('/api/auth/login', {
     method: 'POST',
-    body: { email, password: DEMO_PASSWORD_DEFAULT },
+    body: { email, password: FIXTURE_PASSWORD },
   });
   assert.equal(res.status, 200, `Login failed for ${email}: ${JSON.stringify(res.json)}`);
-  return String(res.json.token);
+  const cookie = res.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(cookie, 'Login did not set a session cookie');
+  return { cookie, csrfToken: String(res.json.csrfToken) };
 }
 
 function makeSampleSnapshot(title = 'Лабораторная работа с Ә Ғ Қ Ң Ө Ұ Ү І'): LabReportSnapshot {
   return {
-    templateVersion: 'v1.0-demo',
+    templateVersion: 'v1.0-fixture',
     docLang: 'Қазақша',
     university: 'Учебный портал (Тест)',
     department: 'Кафедра ИС',
@@ -67,8 +73,7 @@ function makeSampleSnapshot(title = 'Лабораторная работа с Ә
     conclusion: 'Тест пройден.',
     sources: ['ГОСТ 7.32-2017. — М., 2017.'],
     formatting: {
-      version: 'v1.0-demo',
-      isDemoDefaults: true,
+      version: 'v1.0-fixture',
       pageSize: 'A4',
       marginsMm: { top: 20, right: 10, bottom: 20, left: 30 },
       fontFamily: 'Times New Roman',
@@ -84,12 +89,10 @@ function makeSampleSnapshot(title = 'Лабораторная работа с Ә
 
 before(async () => {
   tempUploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ncc-test-uploads-'));
-  repo = new DemoRepository();
+  repo = new FixtureRepository();
   const app = createApp(repo, {
     uploadDir: tempUploadDir,
     sessionSecret: 'test-secret-key-for-automated-suite',
-    allowDemoPreviewAccounts: true,
-    allowBearerAuth: true,
   });
 
   await new Promise<void>((resolve) => {
@@ -122,20 +125,20 @@ test('01 & 02: Strict group isolation for students and teachers', async () => {
   });
   assert.equal(crossSubmit.status, 403);
 
-  // Student 1 cannot inspect Student 2's submission (sub-demo-2)
-  const s1ReadS2 = await jsonReq('/api/submissions/sub-demo-2', { token: s1Token });
+  // Student 1 cannot inspect Student 2's submission (sub-fixture-2)
+  const s1ReadS2 = await jsonReq('/api/submissions/sub-fixture-2', { token: s1Token });
   assert.equal(s1ReadS2.status, 403);
 
-  // Student 2 cannot inspect Student 1's submission (sub-demo-1)
-  const s2ReadS1 = await jsonReq('/api/submissions/sub-demo-1', { token: s2Token });
+  // Student 2 cannot inspect Student 1's submission (sub-fixture-1)
+  const s2ReadS1 = await jsonReq('/api/submissions/sub-fixture-1', { token: s2Token });
   assert.equal(s2ReadS1.status, 403);
 
-  // Teacher 1 cannot inspect ВТ-20 submission (sub-demo-2)
-  const t1ReadS2 = await jsonReq('/api/submissions/sub-demo-2', { token: t1Token });
+  // Teacher 1 cannot inspect ВТ-20 submission (sub-fixture-2)
+  const t1ReadS2 = await jsonReq('/api/submissions/sub-fixture-2', { token: t1Token });
   assert.equal(t1ReadS2.status, 403);
 
-  // Teacher 2 cannot inspect ИС-21-2 submission (sub-demo-1)
-  const t2ReadS1 = await jsonReq('/api/submissions/sub-demo-1', { token: t2Token });
+  // Teacher 2 cannot inspect ИС-21-2 submission (sub-fixture-1)
+  const t2ReadS1 = await jsonReq('/api/submissions/sub-fixture-1', { token: t2Token });
   assert.equal(t2ReadS1.status, 403);
 });
 
@@ -156,7 +159,7 @@ test('Student draft survives reads and is isolated by student', async () => {
 test('Cookie session requires CSRF token and is revoked on logout', async () => {
   const login = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: 'smailov@normocontrol.local', password: DEMO_PASSWORD_DEFAULT }),
+    body: JSON.stringify({ email: 'smailov@normocontrol.local', password: FIXTURE_PASSWORD }),
   });
   assert.equal(login.status, 200);
   const body = await login.json();
@@ -191,16 +194,16 @@ test('Password change revokes existing sessions', async () => {
 test('03: Admin is blocked (403) from reading or downloading student submissions', async () => {
   const adminToken = await loginAs('admin@normocontrol.local');
 
-  const bundleRes = await jsonReq('/api/submissions/sub-demo-1', { token: adminToken });
+  const bundleRes = await jsonReq('/api/submissions/sub-fixture-1', { token: adminToken });
   assert.equal(bundleRes.status, 403);
 
   const dlRes = await fetch(
-    `${baseUrl}/api/submissions/sub-demo-1/versions/ver-demo-1-v1/download`,
-    { headers: { Authorization: `Bearer ${adminToken}` } }
+    `${baseUrl}/api/submissions/sub-fixture-1/versions/ver-fixture-1-v1/download`,
+    { headers: { Cookie: adminToken.cookie } }
   );
   assert.equal(dlRes.status, 403);
 
-  const remarkRes = await jsonReq('/api/submissions/sub-demo-1/remarks/draft', {
+  const remarkRes = await jsonReq('/api/submissions/sub-fixture-1/remarks/draft', {
     method: 'POST',
     token: adminToken,
     body: { pageNumber: 1, severity: 'mandatory', gostRule: 'ГОСТ', text: 'test' },
@@ -212,7 +215,7 @@ test('04: Revoking teacher assignment immediately denies access on the next requ
   const adminToken = await loginAs('admin@normocontrol.local');
   const t2Token = await loginAs('zhumabaev@normocontrol.local'); // assigned via ta-3 to grp-vt-20
 
-  const beforeRevoke = await jsonReq('/api/submissions/sub-demo-2', { token: t2Token });
+  const beforeRevoke = await jsonReq('/api/submissions/sub-fixture-2', { token: t2Token });
   assert.equal(beforeRevoke.status, 200);
 
   // Admin revokes ta-3
@@ -224,7 +227,7 @@ test('04: Revoking teacher assignment immediately denies access on the next requ
   assert.equal(revokeRes.status, 200);
 
   // Very next request from Teacher 2 fails with 403
-  const afterRevoke = await jsonReq('/api/submissions/sub-demo-2', { token: t2Token });
+  const afterRevoke = await jsonReq('/api/submissions/sub-fixture-2', { token: t2Token });
   assert.equal(afterRevoke.status, 403);
 
   // Restore ta-3 for cleanliness
@@ -245,7 +248,7 @@ test('05 & 06: Idempotency deduplication and rejected invalid upload creates no 
 
   const badUploadRes = await fetch(`${baseUrl}/api/assignments/asg-lab-1/submit`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${s1Token}` },
+    headers: { Cookie: s1Token.cookie, 'X-CSRF-Token': s1Token.csrfToken },
     body: badForm,
   });
   assert.equal(badUploadRes.status, 400);
@@ -295,7 +298,7 @@ test('05 & 06: Idempotency deduplication and rejected invalid upload creates no 
 
   const bundle = firstSubmit.json.bundle as { submission: { id: string }; versions: { id: string }[] };
   const fileResponse = await fetch(`${baseUrl}/api/submissions/${bundle.submission.id}/versions/${bundle.versions[0].id}/download`, {
-    headers: { Authorization: `Bearer ${s1Token}` },
+    headers: { Cookie: s1Token.cookie },
   });
   assert.equal(fileResponse.status, 200);
   const storedBytes = Buffer.from(await fileResponse.arrayBuffer());
@@ -307,11 +310,11 @@ test('Teacher assigned to same group cannot inspect another teacher assignment',
   assert.ok(secondTeacher);
   await repo.upsertTeacherAssignment({ teacherId: secondTeacher.id, groupId: 'grp-is-21-2', discipline: 'Проверка ACL', active: true });
   const token = await loginAs('zhumabaev@normocontrol.local');
-  const read = await jsonReq('/api/submissions/sub-demo-1', { token });
+  const read = await jsonReq('/api/submissions/sub-fixture-1', { token });
   assert.equal(read.status, 403);
   const queue = await jsonReq('/api/submissions/queue', { token });
   assert.equal(queue.status, 200);
-  assert.equal((queue.json.queue as { submission: { id: string } }[]).some((r) => r.submission.id === 'sub-demo-1'), false);
+  assert.equal((queue.json.queue as { submission: { id: string } }[]).some((r) => r.submission.id === 'sub-fixture-1'), false);
 });
 
 test('07, 08, 09, 10: Draft remarks hidden, v1 immutable, separate resubmitDeadlineAt, mandatory close gate', async () => {
@@ -418,8 +421,8 @@ test('07, 08, 09, 10: Draft remarks hidden, v1 immutable, separate resubmitDeadl
   assert.equal(approvedSub.status, 'approved_in_system');
 });
 
-test('11: 40 synthetic submissions queue sort order, counts, and filters', async () => {
-  await repo.seedSyntheticQueueBatch(40);
+test('11: 40 fixture submissions queue sort order, counts, and filters', async () => {
+  await repo.addQueueFixtures(40);
   const t1Token = await loginAs('omarova@normocontrol.local');
 
   const qAll = await jsonReq('/api/submissions/queue', { token: t1Token });

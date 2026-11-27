@@ -33,7 +33,7 @@ function createInitialSnapshot(
   assignment?: AssignmentDTO
 ): LabReportSnapshotDTO {
   return {
-    templateVersion: 'v1.0-demo',
+    templateVersion: assignment?.templateVersion || 'editable-1',
     docLang: 'Русский',
     university: '',
     department: '',
@@ -51,8 +51,7 @@ function createInitialSnapshot(
     conclusion: '',
     sources: [],
     formatting: {
-      version: 'v1.0-demo',
-      isDemoDefaults: true,
+      version: assignment?.templateVersion || 'editable-1',
       pageSize: 'A4',
       marginsMm: { top: 20, right: 10, bottom: 20, left: 30 },
       fontFamily: 'Times New Roman',
@@ -108,7 +107,6 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [simulateFailure, setSimulateFailure] = useState<boolean>(false);
   const [idempotencyKey, setIdempotencyKey] = useState<string>(
     () => `idem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
   );
@@ -311,7 +309,6 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
         file: selectedFile,
         idempotencyKey,
         replies: collectRepliesForSubmission(asgId),
-        simulateFailure,
         onProgress: setUploadProgress,
       });
       setIdempotencyKey(`idem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
@@ -508,7 +505,6 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          setSimulateFailure(false);
                           handleSubmitFile(selectedAssignment.id);
                         }}
                         className="px-3 py-1.5 rounded-lg bg-error text-on-error font-semibold text-[12px] cursor-pointer"
@@ -571,21 +567,7 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                       </div>
                     )}
 
-                    <label className="flex items-center gap-2 text-[12px] text-on-surface-variant cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={simulateFailure}
-                        onChange={(e) => setSimulateFailure(e.target.checked)}
-                      />
-                      <span>
-                        Смоделировать обрыв сети при отправке (проверка сохранения черновика и отсутствия ложной квитанции)
-                      </span>
-                    </label>
-
                     <div className="flex flex-wrap justify-between items-center gap-2 pt-2">
-                      <span className="text-[11px] font-mono text-on-surface-variant">
-                        Ключ идемпотентности: {idempotencyKey}
-                      </span>
                       <button
                         type="button"
                         disabled={submitting || !selectedFile}
@@ -601,7 +583,7 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                     <div className="flex flex-wrap items-center justify-between gap-2 bg-surface-container-low rounded-lg p-3">
                       <div className="text-[12px]">
                         <p className="font-bold text-primary">
-                          Шаблон лабораторной работы · {snapshot.formatting.version} (демонстрационные параметры)
+                          Шаблон лабораторной работы · {snapshot.formatting.version}
                         </p>
                         <p className="text-on-surface-variant">
                           Поля А4: Л {snapshot.formatting.marginsMm.left} / П{' '}

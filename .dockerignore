@@ -6,3 +6,7 @@ storage
 backups
 .env.*
 .aistudio
+tests
+design
+docs
+metadata.json

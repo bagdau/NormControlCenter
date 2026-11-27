@@ -273,7 +273,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
                 required
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
-                placeholder="Например: ИС-22-1"
+                placeholder="Название группы"
                 className="rounded-lg border border-outline-variant px-3 py-2 text-[14px]"
               />
             </label>
@@ -345,7 +345,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
                 required
                 value={userFullName}
                 onChange={(e) => setUserFullName(e.target.value)}
-                placeholder="Серикбаев Данияр"
+                placeholder="Фамилия Имя Отчество"
                 className="rounded-lg border border-outline-variant px-3 py-2 text-[13px]"
               />
             </label>
@@ -388,11 +388,12 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
               </label>
             )}
             <label className="flex flex-col gap-1 text-[13px] font-medium">
-              <span>Начальный пароль</span>
+              <span>Начальный пароль (не менее 16 символов)</span>
               <input
                 type="password"
                 required
-                minLength={12}
+                minLength={16}
+                maxLength={256}
                 value={userPassword}
                 onChange={(e) => setUserPassword(e.target.value)}
                 className="rounded-lg border border-outline-variant px-3 py-2 text-[13px] font-mono"

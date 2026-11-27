@@ -110,7 +110,6 @@ export interface Assignment {
 
 export interface TemplateFormattingConfig {
   version: string;
-  isDemoDefaults: boolean;
   pageSize: 'A4';
   marginsMm: {
     top: number;

@@ -4,11 +4,7 @@ import path from 'node:path';
 import express, { NextFunction, Request, Response } from 'express';
 import multer from 'multer';
 import { generateLabDocxBuffer, generateLabPdfBuffer } from './docGenerator';
-import {
-  DEMO_PASSWORD_DEFAULT,
-  IRepository,
-  SubmissionBundle,
-} from './repositories/repository';
+import { IRepository, SubmissionBundle } from './repositories/repository';
 import {
   MAX_UPLOAD_BYTES,
   computeSha256,
@@ -24,8 +20,6 @@ import { LabReportSnapshot, UserRecord } from './types';
 export interface AppOptions {
   uploadDir: string;
   sessionSecret: string;
-  allowDemoPreviewAccounts?: boolean;
-  allowBearerAuth?: boolean;
 }
 
 interface AuthedRequest extends Request {
@@ -38,14 +32,6 @@ function stripDraftPackagesForStudent(bundle: SubmissionBundle): SubmissionBundl
     ...bundle,
     packages: bundle.packages.filter((p) => p.status === 'published'),
   };
-}
-
-function parseBearerToken(req: Request): string | null {
-  const header = req.headers.authorization;
-  if (!header) return null;
-  const [scheme, token] = header.split(' ');
-  if (scheme?.toLowerCase() !== 'bearer' || !token) return null;
-  return token.trim();
 }
 
 function parseSessionCookie(req: Request): string | null {
@@ -87,26 +73,6 @@ export function createApp(repo: IRepository, options: AppOptions) {
       dbReady: hc.dbReady,
       mode: repo.mode,
       persistsAcrossRestart: repo.persistsAcrossRestart,
-      demoBanner:
-        repo.mode === 'demo-in-memory'
-          ? 'Демо-режим (в памяти сервера): данные сбрасываются при перезапуске. Для постоянного хранения запустите PostgreSQL.'
-          : null,
-      allowDemoPreviewAccounts: Boolean(options.allowDemoPreviewAccounts),
-    });
-  });
-
-  // Preview demo accounts list (ONLY exposed when demo preview mode is explicitly enabled)
-  app.get('/api/auth/demo-accounts', async (_req, res) => {
-    if (!options.allowDemoPreviewAccounts) {
-      return res.status(404).json({ error: 'Demo preview accounts disabled' });
-    }
-    const users = await repo.listUsers();
-    const previewUsers = users.filter((u) => !u.email.startsWith('synth.student.'));
-    res.json({
-      demoOnlyWarning:
-        'Изолированный режим предпросмотра с синтетическими учётными записями. Не является обходом серверной проверки подлинности.',
-      defaultPassword: DEMO_PASSWORD_DEFAULT,
-      accounts: previewUsers,
     });
   });
 
@@ -139,7 +105,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
     const publicUser = await repo.toPublicUser(user);
     const secure = req.secure || process.env.APP_URL?.startsWith('https://');
     res.setHeader('Set-Cookie', `ncc_session=${rawToken}; HttpOnly; SameSite=Strict; Path=/api; Max-Age=43200${secure ? '; Secure' : ''}`);
-    return res.json({ ...(options.allowBearerAuth ? { token: rawToken } : {}), csrfToken: csrfForSession(tokenHash, options.sessionSecret), expiresAt, user: publicUser });
+    return res.json({ csrfToken: csrfForSession(tokenHash, options.sessionSecret), expiresAt, user: publicUser });
   });
 
   const requireAuth = async (
@@ -148,7 +114,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
     next: NextFunction
   ) => {
     const cookieToken = parseSessionCookie(req);
-    const token = cookieToken || (options.allowBearerAuth ? parseBearerToken(req) : null);
+    const token = cookieToken;
     if (!token) {
       return res.status(401).json({
         code: 'SESSION_EXPIRED',
@@ -258,7 +224,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
       faculties,
       departments,
       groups,
-      users: users.filter((u) => !u.email.startsWith('synth.student.')),
+      users,
       teacherAssignments,
     });
   });
@@ -288,7 +254,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
   app.post('/api/admin/groups', requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
     const departmentId = String(req.body?.departmentId || '').trim();
     const name = String(req.body?.name || '').trim();
-    const yearLabel = String(req.body?.yearLabel || '2023–2024').trim();
+    const yearLabel = String(req.body?.yearLabel || `${new Date().getUTCFullYear()}–${new Date().getUTCFullYear() + 1}`).trim();
     if (!name || !departmentId) {
       return res.status(400).json({ error: 'Выберите кафедру и укажите название группы.' });
     }
@@ -316,7 +282,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
     if (!email || !fullName || !['student', 'teacher'].includes(role)) {
       return res.status(400).json({ error: 'Проверьте email, ФИО и роль пользователя.' });
     }
-    if (password.length < 12) return res.status(400).json({ error: 'Укажите начальный пароль длиной не менее 12 символов.' });
+    if (password.length < 16 || password.length > 256) return res.status(400).json({ error: 'Укажите начальный пароль длиной 16–256 символов.' });
     if (role === 'student' && !groupId) {
       return res.status(400).json({ error: 'Для студента необходимо выбрать группу.' });
     }
@@ -593,7 +559,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
       workType,
       title,
       instructions: instructions || 'Приложите работу в формате PDF/DOCX или оформите через конструктор.',
-      templateVersion: 'v1.0-demo',
+      templateVersion: 'editable-1',
       deadlineAt,
       latePolicy,
       expectedFeedbackDate,
@@ -970,7 +936,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
         authorId: user.id,
         resubmitDeadlineAt,
       });
-      if (repo.mode === 'demo-in-memory') await repo.addAuditLog({
+      if (repo.mode === 'test-in-memory') await repo.addAuditLog({
         actorId: user.id,
         actorName: user.shortName,
         action: `Работа возвращена на доработку (пакет замечаний к v${bundle.submission.currentVersionNum})`,
@@ -1036,7 +1002,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
 
     try {
       const updated = await repo.approveInSystem(bundle.submission.id, user.id);
-      if (repo.mode === 'demo-in-memory') await repo.addAuditLog({
+      if (repo.mode === 'test-in-memory') await repo.addAuditLog({
         actorId: user.id,
         actorName: user.shortName,
         action: `Статус установлен: Согласовано в системе (v${bundle.submission.currentVersionNum})`,

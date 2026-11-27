@@ -181,14 +181,6 @@ export const api = {
     return apiRequest<HealthInfoDTO>('/api/health');
   },
 
-  getDemoAccounts(): Promise<{
-    demoOnlyWarning: string;
-    defaultPassword: string;
-    accounts: PublicUserDTO[];
-  }> {
-    return apiRequest('/api/auth/demo-accounts');
-  },
-
   async login(email: string, password: string): Promise<{ user: PublicUserDTO }> {
     const res = await apiRequest<{ csrfToken: string; user: PublicUserDTO }>('/api/auth/login', {
       method: 'POST',
@@ -410,31 +402,10 @@ export const api = {
       file: File;
       idempotencyKey: string;
       replies?: { remarkId: string; replyText: string }[];
-      simulateFailure?: boolean;
       onProgress?: (pct: number) => void;
     }
   ): Promise<{ bundle: SubmissionBundleDTO; receipt: ReceiptDTO; deduplicated: boolean }> {
     return new Promise((resolve, reject) => {
-      if (input.simulateFailure) {
-        let pct = 15;
-        input.onProgress?.(pct);
-        const timer = setInterval(() => {
-          pct += 20;
-          if (pct >= 55) {
-            clearInterval(timer);
-            input.onProgress?.(55);
-            reject(
-              new NetworkOfflineError(
-                'Смоделированный сбой сети на 55% загрузки. Проверьте статус сдачи перед повтором.'
-              )
-            );
-            return;
-          }
-          input.onProgress?.(pct);
-        }, 120);
-        return;
-      }
-
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `/api/assignments/${encodeURIComponent(assignmentId)}/submit`);
       xhr.withCredentials = true;

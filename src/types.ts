@@ -120,7 +120,6 @@ export interface AssignmentDTO {
 
 export interface TemplateFormattingConfigDTO {
   version: string;
-  isDemoDefaults: boolean;
   pageSize: 'A4';
   marginsMm: {
     top: number;
@@ -263,10 +262,8 @@ export interface AuditLogDTO {
 export interface HealthInfoDTO {
   ok: boolean;
   dbReady: boolean;
-  mode: 'demo-in-memory' | 'postgresql';
+  mode: 'postgresql';
   persistsAcrossRestart: boolean;
-  demoBanner: string | null;
-  allowDemoPreviewAccounts: boolean;
 }
 
 export interface ToastMessage {

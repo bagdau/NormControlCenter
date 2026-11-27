@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ReceiptDTO, UILang } from '../types';
 import { formatAlmatyDateTime } from '../api/client';
 
@@ -21,6 +21,30 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   onClose,
   onGoToSubmissions,
 }) => {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!receipt) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [receipt, onClose]);
+
   if (!receipt) return null;
 
   return (
@@ -28,18 +52,29 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="receipt-dialog-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-on-surface/55 backdrop-blur-xs p-4"
+      className="receipt-backdrop fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-on-surface/45 backdrop-blur-xs sm:p-4"
       onClick={onClose}
     >
       <div
-        className="bg-surface-container-lowest w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden border border-outline-variant/50"
+        ref={dialogRef}
+        className="receipt-sheet bg-surface-container-lowest w-full max-w-lg rounded-t-[28px] sm:rounded-[24px] shadow-2xl overflow-hidden border border-outline-variant/50 max-h-[94dvh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="bg-primary text-on-primary px-5 py-4 flex items-center justify-between gap-3">
+        <div className="bg-primary text-on-primary px-5 pt-6 pb-4 sm:py-5 flex items-center justify-between gap-3 relative touch-pan-y"
+          onTouchStart={(event) => { const touch = event.touches[0]; touchStart.current = { x: touch.clientX, y: touch.clientY }; }}
+          onTouchEnd={(event) => {
+            const start = touchStart.current;
+            touchStart.current = null;
+            if (!start || window.innerWidth >= 640) return;
+            const touch = event.changedTouches[0];
+            if (touch.clientY - start.y > 80 && Math.abs(touch.clientX - start.x) < 70) onClose();
+          }}
+        >
+          <span className="receipt-handle sm:hidden" aria-hidden="true" />
           <div className="flex items-center gap-3 min-w-0">
             <span className="material-symbols-outlined text-[24px] shrink-0">verified</span>
             <div className="min-w-0">
-              <p className="text-[11px] uppercase tracking-wider text-on-primary-container font-semibold">
+              <p className="text-[11px] uppercase tracking-wider text-white/80 font-semibold">
                 {lang === 'kz' ? 'Электрондық түбіртек' : 'Подтверждение сохранения на сервере'}
               </p>
               <h2 id="receipt-dialog-title" className="font-display font-bold text-[17px] truncate">
@@ -49,15 +84,16 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
           </div>
           <button
             type="button"
+            ref={closeButtonRef}
             onClick={onClose}
             aria-label="Закрыть окно"
-            className="w-8 h-8 rounded-lg hover:bg-white/15 flex items-center justify-center cursor-pointer"
+            className="w-11 h-11 rounded-xl hover:bg-white/15 flex items-center justify-center cursor-pointer shrink-0"
           >
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>
 
-        <div className="p-5 flex flex-col gap-3 text-[13px]">
+        <div className="p-5 flex flex-col gap-3 text-[13px] overflow-y-auto">
           {assignmentTitle && (
             <div className="bg-surface-container-low rounded-lg p-3">
               <p className="text-[11px] uppercase text-on-surface-variant font-semibold">Задание</p>
@@ -92,7 +128,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
           </p>
         </div>
 
-        <div className="px-5 py-4 bg-surface-container-low flex flex-wrap justify-end gap-2">
+        <div className="px-5 py-4 pb-safe bg-surface-container-low flex flex-wrap justify-end gap-2">
           {onGoToSubmissions && (
             <button
               type="button"
@@ -100,7 +136,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 onClose();
                 onGoToSubmissions();
               }}
-              className="px-4 py-2 rounded-lg bg-surface-container-lowest border border-outline-variant text-on-surface font-semibold text-[13px] cursor-pointer"
+              className="min-h-11 px-4 py-2 rounded-xl bg-surface-container-lowest border border-outline-variant text-on-surface font-semibold text-[13px] cursor-pointer"
             >
               К реестру сдач
             </button>
@@ -108,7 +144,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-lg bg-primary text-on-primary font-semibold text-[13px] cursor-pointer"
+            className="min-h-11 px-4 py-2 rounded-xl bg-primary text-on-primary font-semibold text-[13px] cursor-pointer"
           >
             Понятно
           </button>

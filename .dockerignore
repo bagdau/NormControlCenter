@@ -3,4 +3,6 @@ dist
 .git
 .env
 storage
+backups
+.env.*
 .aistudio

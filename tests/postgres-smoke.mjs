@@ -9,17 +9,21 @@ const password = 'DemoNormo2024!';
 async function request(route, token, method = 'GET', body) {
   const response = await fetch(`${base}${route}`, {
     method,
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    headers: { ...(token ? { Cookie: token.cookie, 'X-CSRF-Token': token.csrfToken } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json();
-  return { status: response.status, data };
+  return { status: response.status, data, headers: response.headers };
 }
 
 async function login(email) {
   const result = await request('/api/auth/login', null, 'POST', { email, password });
   assert.equal(result.status, 200, `${email}: ${JSON.stringify(result.data)}`);
-  return result.data.token;
+  const cookie = result.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(cookie?.startsWith('ncc_session='));
+  assert.ok(result.data.csrfToken);
+  assert.equal(result.data.token, undefined);
+  return { cookie, csrfToken: result.data.csrfToken };
 }
 
 let health;
@@ -73,7 +77,7 @@ assert.equal(duplicate.data.receipt.id, v1.data.receipt.id);
 const conflict = await request(`/api/assignments/${assignmentId}/submit`, student, 'POST', { idempotencyKey: key, snapshot: { ...snapshot, title: 'Иное содержимое' } });
 assert.equal(conflict.status, 409);
 const versionId = v1.data.bundle.versions[0].id;
-const file = await fetch(`${base}/api/submissions/${subId}/versions/${versionId}/download`, { headers: { Authorization: `Bearer ${student}` } });
+const file = await fetch(`${base}/api/submissions/${subId}/versions/${versionId}/download`, { headers: { Cookie: student.cookie } });
 assert.equal(file.status, 200);
 const digest = crypto.createHash('sha256').update(Buffer.from(await file.arrayBuffer())).digest('hex');
 assert.equal(digest, v1.data.receipt.sha256Hex);

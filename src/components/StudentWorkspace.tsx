@@ -35,27 +35,21 @@ function createInitialSnapshot(
   return {
     templateVersion: 'v1.0-demo',
     docLang: 'Русский',
-    university: 'Учебный портал кафедры ИС (Демо-контур)',
-    department: 'Кафедра «Информационные системы и программная инженерия»',
-    discipline: assignment?.title || 'Проектирование информационных систем',
-    labNumber: '1',
-    title: assignment?.title || 'Проектирование модуля нормоконтроля документации',
+    university: '',
+    department: '',
+    discipline: assignment?.title || '',
+    labNumber: '',
+    title: assignment?.title || '',
     studentName: user.fullName,
-    studentGroup: user.groupName || 'ИС-21-2',
-    teacherName: 'доц. Омарова Г. К.',
-    cityYear: 'Шымкент, 2024',
-    goal: 'Оформить отчёт по лабораторной работе с соблюдением полей 30/10/20/20 мм, красной строки 1.25 см и требований шаблона.',
-    tools: 'Node.js, TypeScript, PostgreSQL, браузер Chrome/Firefox.',
-    procedure:
-      'Выполнено заполнение разделов лабораторной работы и проверка казахской кириллицы: Ә, Ғ, Қ, Ң, Ө, Ұ, Ү, І.',
-    result:
-      'Сформированы редактируемый DOCX и печатный PDF без повторной распечатки черновиков.',
-    conclusion:
-      'Электронная сдача с версионированием v1/v2 сокращает время проверки и устраняет потерю правок.',
-    sources: [
-      'ГОСТ 7.32-2017. Отчёт о научно-исследовательской работе. — М., 2017.',
-      'СТ РК 1048-2002. Единая система программной документации. — Астана, 2002.',
-    ],
+    studentGroup: user.groupName || '',
+    teacherName: '',
+    cityYear: String(new Date().getFullYear()),
+    goal: '',
+    tools: '',
+    procedure: '',
+    result: '',
+    conclusion: '',
+    sources: [],
     formatting: {
       version: 'v1.0-demo',
       isDemoDefaults: true,
@@ -125,6 +119,8 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
   const [viewerVersionNum, setViewerVersionNum] = useState<number>(1);
   const [viewerPage, setViewerPage] = useState<number>(1);
   const [repliesMap, setRepliesMap] = useState<Record<string, string>>({});
+  const [draftReadyId, setDraftReadyId] = useState<string | null>(null);
+  const [draftStatus, setDraftStatus] = useState<'loading' | 'saving' | 'saved' | 'error'>('loading');
 
   const loadData = async () => {
     setLoading(true);
@@ -166,10 +162,53 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id]);
 
+  useEffect(() => {
+    if (!selectedAssignmentId) return;
+    let cancelled = false;
+    setDraftReadyId(null);
+    setDraftStatus('loading');
+    api.getStudentDraft(selectedAssignmentId).then(({ draft }) => {
+      if (cancelled) return;
+      if (draft) {
+        setSnapshot(draft.snapshot);
+        setSourcesText(draft.snapshot.sources.join('\n'));
+        setRepliesMap(draft.replies);
+        setSubmitMode(draft.mode);
+        setIdempotencyKey(draft.idempotencyKey);
+      }
+      setDraftReadyId(selectedAssignmentId);
+      setDraftStatus('saved');
+    }).catch((err) => { if (!cancelled) onAuthError(err); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAssignmentId, user.id]);
+
+  useEffect(() => {
+    if (!selectedAssignmentId || draftReadyId !== selectedAssignmentId || submitting) return;
+    let cancelled = false;
+    setDraftStatus('saving');
+    const timer = window.setTimeout(() => {
+      void api.saveStudentDraft(selectedAssignmentId, {
+        snapshot: { ...snapshot, sources: sourcesText.split('\n').map((item) => item.trim()).filter(Boolean) },
+        replies: repliesMap,
+        mode: submitMode,
+        idempotencyKey,
+      }).then(() => { if (!cancelled) setDraftStatus('saved'); }).catch((err) => {
+        if (!cancelled) {
+          setDraftStatus('error');
+          onAuthError(err);
+        }
+      });
+    }, 700);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAssignmentId, draftReadyId, snapshot, sourcesText, repliesMap, submitMode, idempotencyKey, submitting]);
+
   const selectedAssignment =
     assignments.find((a) => a.id === selectedAssignmentId) || assignments[0];
 
   const handleSelectAssignment = (asg: AssignmentDTO) => {
+    setDraftReadyId(null);
     setSelectedAssignmentId(asg.id);
     setUploadError(null);
     setUploadProgress(0);
@@ -424,6 +463,9 @@ export const StudentWorkspace: React.FC<StudentWorkspaceProps> = ({
                   </div>
                   <p className="text-[13px] text-on-surface-variant">
                     {selectedAssignment.instructions}
+                  </p>
+                  <p className={`text-[12px] ${draftStatus === 'error' ? 'text-error' : 'text-on-surface-variant'}`} role="status">
+                    {draftStatus === 'loading' ? 'Загрузка черновика…' : draftStatus === 'saving' ? 'Сохранение черновика…' : draftStatus === 'error' ? 'Черновик не сохранился. Проверьте соединение.' : 'Черновик сохранён на сервере.'}
                   </p>
 
                   {/* Mode Switcher */}

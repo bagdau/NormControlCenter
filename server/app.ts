@@ -14,6 +14,7 @@ import {
   computeSha256,
   generateSessionToken,
   hashSessionToken,
+  hashPassword,
   safeStoragePath,
   validateUploadedFile,
   verifyPassword,
@@ -24,6 +25,7 @@ export interface AppOptions {
   uploadDir: string;
   sessionSecret: string;
   allowDemoPreviewAccounts?: boolean;
+  allowBearerAuth?: boolean;
 }
 
 interface AuthedRequest extends Request {
@@ -46,9 +48,22 @@ function parseBearerToken(req: Request): string | null {
   return token.trim();
 }
 
+function parseSessionCookie(req: Request): string | null {
+  const value = req.headers.cookie?.split(';').map((part) => part.trim())
+    .find((part) => part.startsWith('ncc_session='))?.slice('ncc_session='.length);
+  return value && /^[a-f0-9]{64}$/.test(value) ? value : null;
+}
+
+function csrfForSession(tokenHash: string, secret: string): string {
+  return crypto.createHmac('sha256', secret).update(`csrf:${tokenHash}`).digest('hex');
+}
+
 export function createApp(repo: IRepository, options: AppOptions) {
   const app = express();
+  app.set('trust proxy', 1);
   fs.mkdirSync(options.uploadDir, { recursive: true });
+  const loginFailures = new Map<string, { count: number; until: number }>();
+  const invalidPasswordHash = hashPassword(crypto.randomBytes(24).toString('hex'));
 
   app.use(express.json({ limit: '4mb' }));
 
@@ -67,7 +82,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
   // Health & runtime mode endpoint (no secrets exposed)
   app.get('/api/health', async (_req, res) => {
     const hc = await repo.healthCheck();
-    res.json({
+    res.status(hc.ok && hc.dbReady ? 200 : 503).json({
       ok: hc.ok,
       dbReady: hc.dbReady,
       mode: repo.mode,
@@ -103,10 +118,18 @@ export function createApp(repo: IRepository, options: AppOptions) {
       return res.status(400).json({ error: 'Укажите email и пароль.' });
     }
 
+    const limitKey = req.ip || 'unknown';
+    const attempt = loginFailures.get(limitKey);
+    if (attempt && attempt.count >= 5 && attempt.until > Date.now()) {
+      return res.status(429).json({ code: 'LOGIN_RATE_LIMIT', error: 'Слишком много попыток входа. Повторите через 15 минут.' });
+    }
     const user = await repo.findUserByEmail(email);
-    if (!user || !user.active || !verifyPassword(password, user.passwordHash)) {
+    const validPassword = verifyPassword(password, user?.passwordHash || invalidPasswordHash);
+    if (!user || !user.active || !validPassword) {
+      loginFailures.set(limitKey, { count: (attempt?.until && attempt.until > Date.now() ? attempt.count : 0) + 1, until: Date.now() + 15 * 60_000 });
       return res.status(401).json({ error: 'Неверный логин, пароль или учётная запись отключена.' });
     }
+    loginFailures.delete(limitKey);
 
     const rawToken = generateSessionToken();
     const tokenHash = hashSessionToken(rawToken, options.sessionSecret);
@@ -114,7 +137,9 @@ export function createApp(repo: IRepository, options: AppOptions) {
     await repo.createSession(tokenHash, user.id, expiresAt);
 
     const publicUser = await repo.toPublicUser(user);
-    return res.json({ token: rawToken, expiresAt, user: publicUser });
+    const secure = req.secure || process.env.APP_URL?.startsWith('https://');
+    res.setHeader('Set-Cookie', `ncc_session=${rawToken}; HttpOnly; SameSite=Strict; Path=/api; Max-Age=43200${secure ? '; Secure' : ''}`);
+    return res.json({ ...(options.allowBearerAuth ? { token: rawToken } : {}), csrfToken: csrfForSession(tokenHash, options.sessionSecret), expiresAt, user: publicUser });
   });
 
   const requireAuth = async (
@@ -122,7 +147,8 @@ export function createApp(repo: IRepository, options: AppOptions) {
     res: Response,
     next: NextFunction
   ) => {
-    const token = parseBearerToken(req);
+    const cookieToken = parseSessionCookie(req);
+    const token = cookieToken || (options.allowBearerAuth ? parseBearerToken(req) : null);
     if (!token) {
       return res.status(401).json({
         code: 'SESSION_EXPIRED',
@@ -139,6 +165,13 @@ export function createApp(repo: IRepository, options: AppOptions) {
     }
     req.authUser = user;
     req.authTokenHash = tokenHash;
+    if (cookieToken && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      const expected = csrfForSession(tokenHash, options.sessionSecret);
+      const supplied = req.get('X-CSRF-Token') || '';
+      if (supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) {
+        return res.status(403).json({ code: 'CSRF_REJECTED', error: 'Защитный токен запроса недействителен.' });
+      }
+    }
     next();
   };
 
@@ -146,12 +179,23 @@ export function createApp(repo: IRepository, options: AppOptions) {
     if (req.authTokenHash) {
       await repo.deleteSession(req.authTokenHash);
     }
+    res.setHeader('Set-Cookie', 'ncc_session=; HttpOnly; SameSite=Strict; Path=/api; Max-Age=0');
     res.json({ ok: true });
   });
 
   app.get('/api/auth/me', requireAuth, async (req: AuthedRequest, res) => {
     const publicUser = await repo.toPublicUser(req.authUser!);
-    res.json({ user: publicUser });
+    res.json({ user: publicUser, csrfToken: csrfForSession(req.authTokenHash!, options.sessionSecret) });
+  });
+
+  app.post('/api/auth/change-password', requireAuth, async (req: AuthedRequest, res) => {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+    if (!verifyPassword(currentPassword, req.authUser!.passwordHash)) return res.status(403).json({ error: 'Текущий пароль неверен.' });
+    if (newPassword.length < 16 || newPassword.length > 256 || newPassword === currentPassword) return res.status(400).json({ error: 'Новый пароль должен отличаться и содержать 16–256 символов.' });
+    await repo.changeUserPassword(req.authUser!.id, newPassword);
+    res.setHeader('Set-Cookie', 'ncc_session=; HttpOnly; SameSite=Strict; Path=/api; Max-Age=0');
+    res.json({ ok: true, message: 'Пароль изменён. Войдите заново.' });
   });
 
   // Authorization helpers for submission resources
@@ -219,13 +263,36 @@ export function createApp(repo: IRepository, options: AppOptions) {
     });
   });
 
+  app.post('/api/admin/faculties', requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
+    const name = String(req.body?.name || '').trim();
+    const code = String(req.body?.code || '').trim().toUpperCase();
+    if (!name || !code) return res.status(400).json({ error: 'Укажите название и код факультета.' });
+    try {
+      const faculty = await repo.createFaculty({ name, code });
+      res.status(201).json({ faculty });
+    } catch { res.status(409).json({ error: 'Код факультета уже существует.' }); }
+  });
+
+  app.post('/api/admin/departments', requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
+    const facultyId = String(req.body?.facultyId || '').trim();
+    const name = String(req.body?.name || '').trim();
+    const code = String(req.body?.code || '').trim().toUpperCase();
+    if (!facultyId || !name || !code) return res.status(400).json({ error: 'Выберите факультет, название и код кафедры.' });
+    if (!(await repo.listFaculties()).some((faculty) => faculty.id === facultyId)) return res.status(404).json({ error: 'Факультет не найден.' });
+    try {
+      const department = await repo.createDepartment({ facultyId, name, code });
+      res.status(201).json({ department });
+    } catch { res.status(409).json({ error: 'Код кафедры уже существует.' }); }
+  });
+
   app.post('/api/admin/groups', requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
-    const departmentId = String(req.body?.departmentId || 'dep-is').trim();
+    const departmentId = String(req.body?.departmentId || '').trim();
     const name = String(req.body?.name || '').trim();
     const yearLabel = String(req.body?.yearLabel || '2023–2024').trim();
-    if (!name) {
-      return res.status(400).json({ error: 'Укажите название учебной группы.' });
+    if (!name || !departmentId) {
+      return res.status(400).json({ error: 'Выберите кафедру и укажите название группы.' });
     }
+    if (!(await repo.listDepartments()).some((department) => department.id === departmentId)) return res.status(404).json({ error: 'Кафедра не найдена.' });
     const group = await repo.createGroup({ departmentId, name, yearLabel });
     await repo.addAuditLog({
       actorId: req.authUser!.id,
@@ -244,14 +311,19 @@ export function createApp(repo: IRepository, options: AppOptions) {
     const shortName = String(req.body?.shortName || '').trim();
     const role = req.body?.role as 'student' | 'teacher' | 'admin';
     const groupId = req.body?.groupId ? String(req.body.groupId) : null;
-    const departmentId = req.body?.departmentId ? String(req.body.departmentId) : 'dep-is';
+    let departmentId = req.body?.departmentId ? String(req.body.departmentId) : null;
 
-    if (!email || !fullName || !['student', 'teacher', 'admin'].includes(role)) {
+    if (!email || !fullName || !['student', 'teacher'].includes(role)) {
       return res.status(400).json({ error: 'Проверьте email, ФИО и роль пользователя.' });
     }
     if (password.length < 12) return res.status(400).json({ error: 'Укажите начальный пароль длиной не менее 12 символов.' });
     if (role === 'student' && !groupId) {
       return res.status(400).json({ error: 'Для студента необходимо выбрать группу.' });
+    }
+    if (role === 'student') {
+      const group = (await repo.listGroups()).find((item) => item.id === groupId);
+      if (!group) return res.status(404).json({ error: 'Группа не найдена.' });
+      departmentId = group.departmentId;
     }
     const existing = await repo.findUserByEmail(email);
     if (existing) {
@@ -278,6 +350,8 @@ export function createApp(repo: IRepository, options: AppOptions) {
 
   app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
     const active = Boolean(req.body?.active);
+    const target = await repo.findUserById(req.params.id);
+    if (target?.role === 'admin') return res.status(403).json({ error: 'Учётную запись администратора нельзя отключить через реестр.' });
     const updated = await repo.toggleUserActive(req.params.id, active);
     if (!updated) {
       return res.status(404).json({ error: 'Пользователь не найден.' });
@@ -304,6 +378,9 @@ export function createApp(repo: IRepository, options: AppOptions) {
       if (!teacherId || !groupId || !discipline) {
         return res.status(400).json({ error: 'Выберите преподавателя, группу и дисциплину.' });
       }
+      const teacher = await repo.findUserById(teacherId);
+      if (!teacher || teacher.role !== 'teacher' || !teacher.active) return res.status(400).json({ error: 'Выберите активного преподавателя.' });
+      if (!(await repo.listGroups()).some((group) => group.id === groupId)) return res.status(404).json({ error: 'Группа не найдена.' });
       const assignment = await repo.upsertTeacherAssignment({
         teacherId,
         groupId,
@@ -343,6 +420,38 @@ export function createApp(repo: IRepository, options: AppOptions) {
       res.json({ assignment: updated });
     }
   );
+
+  app.get('/api/assignments/:id/draft', requireAuth, async (req: AuthedRequest, res) => {
+    const user = req.authUser!;
+    const assignment = await repo.getAssignmentById(req.params.id);
+    if (user.role !== 'student' || !assignment || assignment.groupId !== user.groupId) return res.status(404).json({ error: 'Задание не найдено.' });
+    res.json({ draft: await repo.getStudentDraft(user.id, assignment.id) });
+  });
+
+  app.put('/api/assignments/:id/draft', requireAuth, async (req: AuthedRequest, res) => {
+    const user = req.authUser!;
+    const assignment = await repo.getAssignmentById(req.params.id);
+    if (user.role !== 'student' || !assignment || assignment.groupId !== user.groupId) return res.status(404).json({ error: 'Задание не найдено.' });
+    const snapshot = req.body?.snapshot as LabReportSnapshot | undefined;
+    const replies = req.body?.replies;
+    const mode = req.body?.mode;
+    const idempotencyKey = String(req.body?.idempotencyKey || '');
+    if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.sources) || !snapshot.formatting ||
+        !replies || typeof replies !== 'object' || Array.isArray(replies) || !['builder', 'upload'].includes(mode) ||
+        idempotencyKey.length < 8 || idempotencyKey.length > 200) {
+      return res.status(400).json({ error: 'Некорректный черновик.' });
+    }
+    const draft = await repo.saveStudentDraft(user.id, assignment.id, { snapshot, replies, mode, idempotencyKey });
+    res.json({ draft });
+  });
+
+  app.delete('/api/assignments/:id/draft', requireAuth, async (req: AuthedRequest, res) => {
+    const user = req.authUser!;
+    const assignment = await repo.getAssignmentById(req.params.id);
+    if (user.role !== 'student' || !assignment || assignment.groupId !== user.groupId) return res.status(404).json({ error: 'Задание не найдено.' });
+    await repo.deleteStudentDraft(user.id, assignment.id);
+    res.json({ ok: true });
+  });
 
   // ==================== SPACES & ASSIGNMENTS ====================
   app.get('/api/spaces', requireAuth, async (req: AuthedRequest, res) => {
@@ -861,7 +970,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
         authorId: user.id,
         resubmitDeadlineAt,
       });
-      await repo.addAuditLog({
+      if (repo.mode === 'demo-in-memory') await repo.addAuditLog({
         actorId: user.id,
         actorName: user.shortName,
         action: `Работа возвращена на доработку (пакет замечаний к v${bundle.submission.currentVersionNum})`,
@@ -927,7 +1036,7 @@ export function createApp(repo: IRepository, options: AppOptions) {
 
     try {
       const updated = await repo.approveInSystem(bundle.submission.id, user.id);
-      await repo.addAuditLog({
+      if (repo.mode === 'demo-in-memory') await repo.addAuditLog({
         actorId: user.id,
         actorName: user.shortName,
         action: `Статус установлен: Согласовано в системе (v${bundle.submission.currentVersionNum})`,

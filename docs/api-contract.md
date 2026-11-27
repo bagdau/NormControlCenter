@@ -1,11 +1,13 @@
 # Контракт API текущего среза
 
-Все защищённые маршруты принимают `Authorization: Bearer <token>`. Ошибки возвращают JSON `{error, code?}`; 401 — сессия, 403 — запрет, 409 — конфликт версии/ключа. Тела и ответы на синтетических данных.
+Защищённые маршруты используют сессионную HttpOnly cookie `ncc_session`. `POST /api/auth/login` возвращает `csrfToken`; передавайте его в `X-CSRF-Token` для PUT/POST/PATCH/DELETE. `GET /api/auth/me` восстанавливает сессию и CSRF-токен после обновления страницы. Ошибки возвращают JSON `{error, code?}`; 401 — сессия, 403 — запрет, 409 — конфликт версии/ключа. Bearer-доступ в продукционном режиме выключен.
 
 | Действие | Маршрут | Роль и правило |
 |---|---|---|
 | Вход/выход | `POST /api/auth/login`, `POST /api/auth/logout` | Активный аккаунт |
+| Смена пароля | `POST /api/auth/change-password` | Текущий и новый пароль, затем завершение всех сессий |
 | Задания | `GET /api/assignments`, `POST /api/assignments` | Студент своей группы; преподаватель своих заданий |
+| Черновик | `GET/PUT/DELETE /api/assignments/:id/draft` | Только студент группы задания; снимок формы, ответы и ключ сдачи хранятся в PostgreSQL |
 | Сдача | `POST /api/assignments/:id/submit` | Студент группы задания; multipart `file` или JSON `snapshot`, обязателен `idempotencyKey` |
 | Свои сдачи | `GET /api/submissions/mine` | Только студент |
 | Очередь | `GET /api/submissions/queue` | Только преподаватель задания при активном назначении |

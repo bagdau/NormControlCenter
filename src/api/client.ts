@@ -48,15 +48,11 @@ export class NetworkOfflineError extends ApiError {
   }
 }
 
-// Auth token kept strictly in JS memory (never in localStorage/sessionStorage)
-let memoryToken: string | null = null;
+// CSRF token is readable only by same-origin JavaScript; session cookie is HttpOnly.
+let csrfToken: string | null = null;
 
-export function setAuthToken(token: string | null) {
-  memoryToken = token;
-}
-
-export function getAuthToken(): string | null {
-  return memoryToken;
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
 }
 
 export function formatAlmatyDateTime(iso: string | null | undefined): string {
@@ -97,16 +93,14 @@ export function formatBytes(bytes: number): string {
 
 async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers || {});
-  if (memoryToken) {
-    headers.set('Authorization', `Bearer ${memoryToken}`);
-  }
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes((init.method || 'GET').toUpperCase())) headers.set('X-CSRF-Token', csrfToken);
   if (init.body && typeof init.body === 'string' && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
   let res: Response;
   try {
-    res = await fetch(path, { ...init, headers });
+    res = await fetch(path, { ...init, headers, credentials: 'same-origin' });
   } catch {
     throw new NetworkOfflineError();
   }
@@ -141,16 +135,14 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 async function downloadBlob(path: string, init: RequestInit, fallbackFileName: string) {
   const headers = new Headers(init.headers || {});
-  if (memoryToken) {
-    headers.set('Authorization', `Bearer ${memoryToken}`);
-  }
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes((init.method || 'GET').toUpperCase())) headers.set('X-CSRF-Token', csrfToken);
   if (init.body && typeof init.body === 'string' && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
   let res: Response;
   try {
-    res = await fetch(path, { ...init, headers });
+    res = await fetch(path, { ...init, headers, credentials: 'same-origin' });
   } catch {
     throw new NetworkOfflineError();
   }
@@ -197,30 +189,42 @@ export const api = {
     return apiRequest('/api/auth/demo-accounts');
   },
 
-  async login(email: string, password: string): Promise<{ token: string; user: PublicUserDTO }> {
-    const res = await apiRequest<{ token: string; user: PublicUserDTO }>('/api/auth/login', {
+  async login(email: string, password: string): Promise<{ user: PublicUserDTO }> {
+    const res = await apiRequest<{ csrfToken: string; user: PublicUserDTO }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    setAuthToken(res.token);
+    setCsrfToken(res.csrfToken);
     return res;
   },
 
   async logout(): Promise<void> {
     try {
-      if (memoryToken) {
+      if (csrfToken) {
         await apiRequest('/api/auth/logout', { method: 'POST' });
       }
     } finally {
-      setAuthToken(null);
+      setCsrfToken(null);
     }
   },
 
-  getMe(): Promise<{ user: PublicUserDTO }> {
-    return apiRequest('/api/auth/me');
+  async getMe(): Promise<{ user: PublicUserDTO }> {
+    const result = await apiRequest<{ user: PublicUserDTO; csrfToken: string }>('/api/auth/me');
+    setCsrfToken(result.csrfToken);
+    return result;
+  },
+
+  changePassword(currentPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+    return apiRequest('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) });
   },
 
   // Admin
+  createFaculty(input: { name: string; code: string }): Promise<{ faculty: FacultyDTO }> {
+    return apiRequest('/api/admin/faculties', { method: 'POST', body: JSON.stringify(input) });
+  },
+  createDepartment(input: { facultyId: string; name: string; code: string }): Promise<{ department: DepartmentDTO }> {
+    return apiRequest('/api/admin/departments', { method: 'POST', body: JSON.stringify(input) });
+  },
   getAdminOverview(): Promise<{
     faculties: FacultyDTO[];
     departments: DepartmentDTO[];
@@ -347,6 +351,18 @@ export const api = {
     return apiRequest('/api/submissions/mine');
   },
 
+  getStudentDraft(assignmentId: string): Promise<{ draft: { snapshot: LabReportSnapshotDTO; replies: Record<string, string>; mode: 'builder' | 'upload'; idempotencyKey: string; updatedAt: string } | null }> {
+    return apiRequest(`/api/assignments/${encodeURIComponent(assignmentId)}/draft`);
+  },
+
+  saveStudentDraft(assignmentId: string, draft: { snapshot: LabReportSnapshotDTO; replies: Record<string, string>; mode: 'builder' | 'upload'; idempotencyKey: string }): Promise<void> {
+    return apiRequest(`/api/assignments/${encodeURIComponent(assignmentId)}/draft`, { method: 'PUT', body: JSON.stringify(draft) });
+  },
+
+  deleteStudentDraft(assignmentId: string): Promise<void> {
+    return apiRequest(`/api/assignments/${encodeURIComponent(assignmentId)}/draft`, { method: 'DELETE' });
+  },
+
   getQueue(filters: {
     groupId?: string;
     assignmentId?: string;
@@ -421,9 +437,8 @@ export const api = {
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `/api/assignments/${encodeURIComponent(assignmentId)}/submit`);
-      if (memoryToken) {
-        xhr.setRequestHeader('Authorization', `Bearer ${memoryToken}`);
-      }
+      xhr.withCredentials = true;
+      if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
 
       xhr.upload.onprogress = (evt) => {
         if (evt.lengthComputable && evt.total > 0) {
@@ -479,8 +494,7 @@ export const api = {
   },
   async getSubmissionVersionBlob(submissionId: string, versionId: string): Promise<Blob> {
     const headers = new Headers();
-    if (memoryToken) headers.set('Authorization', `Bearer ${memoryToken}`);
-    const res = await fetch(`/api/submissions/${encodeURIComponent(submissionId)}/versions/${encodeURIComponent(versionId)}/download`, { headers });
+    const res = await fetch(`/api/submissions/${encodeURIComponent(submissionId)}/versions/${encodeURIComponent(versionId)}/download`, { headers, credentials: 'same-origin' });
     if (res.status === 401) throw new SessionExpiredError();
     if (res.status === 403) throw new ForbiddenError();
     if (!res.ok) throw new ApiError(`Документ недоступен (${res.status})`, res.status);

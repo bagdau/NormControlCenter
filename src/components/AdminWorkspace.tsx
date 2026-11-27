@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api, ApiError, formatAlmatyDateTime } from '../api/client';
+import { api, formatAlmatyDateTime } from '../api/client';
 import {
   AuditLogDTO,
   DepartmentDTO,
@@ -29,20 +29,25 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
   const [users, setUsers] = useState<PublicUserDTO[]>([]);
   const [assignments, setAssignments] = useState<TeacherAssignmentDTO[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogDTO[]>([]);
-  const [forbiddenTestResult, setForbiddenTestResult] = useState<string | null>(null);
 
   // Forms
+  const [facultyName, setFacultyName] = useState('');
+  const [facultyCode, setFacultyCode] = useState('');
+  const [departmentName, setDepartmentName] = useState('');
+  const [departmentCode, setDepartmentCode] = useState('');
+  const [selectedFacultyId, setSelectedFacultyId] = useState('');
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState('');
   const [groupName, setGroupName] = useState('');
-  const [groupYear, setGroupYear] = useState('2023–2024');
+  const [groupYear, setGroupYear] = useState(`${new Date().getFullYear()}–${new Date().getFullYear() + 1}`);
   const [userEmail, setUserEmail] = useState('');
   const [userFullName, setUserFullName] = useState('');
   const [userRole, setUserRole] = useState<UserRole>('student');
-  const [userGroupId, setUserGroupId] = useState('grp-is-21-2');
+  const [userGroupId, setUserGroupId] = useState('');
   const [userPassword, setUserPassword] = useState('');
 
-  const [taTeacherId, setTaTeacherId] = useState('usr-teacher-1');
-  const [taGroupId, setTaGroupId] = useState('grp-vt-20');
-  const [taDiscipline, setTaDiscipline] = useState('Нормоконтроль документации');
+  const [taTeacherId, setTaTeacherId] = useState('');
+  const [taGroupId, setTaGroupId] = useState('');
+  const [taDiscipline, setTaDiscipline] = useState('');
 
   const loadData = async () => {
     setLoading(true);
@@ -71,7 +76,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
     if (!groupName.trim()) return;
     try {
       await api.createGroup({
-        departmentId: departments[0]?.id || 'dep-is',
+        departmentId: selectedDepartmentId || departments[0]?.id || '',
         name: groupName.trim(),
         yearLabel: groupYear.trim(),
       });
@@ -83,6 +88,26 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
     }
   };
 
+  const handleCreateFaculty = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      await api.createFaculty({ name: facultyName.trim(), code: facultyCode.trim() });
+      setFacultyName(''); setFacultyCode('');
+      await loadData();
+      onShowToast('Факультет создан.', 'success');
+    } catch (error) { onShowToast(error instanceof Error ? error.message : 'Ошибка создания факультета', 'error'); }
+  };
+
+  const handleCreateDepartment = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      await api.createDepartment({ facultyId: selectedFacultyId || faculties[0]?.id || '', name: departmentName.trim(), code: departmentCode.trim() });
+      setDepartmentName(''); setDepartmentCode('');
+      await loadData();
+      onShowToast('Кафедра создана.', 'success');
+    } catch (error) { onShowToast(error instanceof Error ? error.message : 'Ошибка создания кафедры', 'error'); }
+  };
+
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -92,8 +117,8 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
         fullName: userFullName.trim(),
         shortName: userFullName.trim(),
         role: userRole,
-        groupId: userRole === 'student' ? userGroupId : null,
-        departmentId: departments[0]?.id || 'dep-is',
+        groupId: userRole === 'student' ? (userGroupId || groups[0]?.id || '') : null,
+        departmentId: departments[0]?.id || null,
       });
       setUserEmail('');
       setUserFullName('');
@@ -122,8 +147,8 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
     e.preventDefault();
     try {
       await api.upsertTeacherAssignment({
-        teacherId: taTeacherId,
-        groupId: taGroupId,
+        teacherId: taTeacherId || teachers[0]?.id || '',
+        groupId: taGroupId || groups[0]?.id || '',
         discipline: taDiscipline.trim(),
         active: true,
       });
@@ -146,17 +171,6 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
       await loadData();
     } catch (err) {
       onShowToast(err instanceof Error ? err.message : 'Ошибка переключения', 'error');
-    }
-  };
-
-  const handleVerifyAdminDocRestriction = async () => {
-    try {
-      await api.getSubmissionBundle('sub-demo-1');
-      setForbiddenTestResult('ОШИБКА: сервер неожиданно выдал документ администратору.');
-    } catch (err) {
-      setForbiddenTestResult(err instanceof ApiError && err.status === 403
-        ? 'Подтверждено: сервер запретил чтение работы (HTTP 403).'
-        : `Проверка не выполнена: ${err instanceof Error ? err.message : 'неизвестная ошибка'}`);
     }
   };
 
@@ -183,18 +197,8 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
             <p className="text-on-surface-variant text-[12px]">
               Администратор не может открывать, просматривать или скачивать файлы студенческих работ (строгая изоляция HTTP 403 на сервере).
             </p>
-            {forbiddenTestResult && (
-              <p className="text-[12px] font-mono text-secondary mt-1">{forbiddenTestResult}</p>
-            )}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={handleVerifyAdminDocRestriction}
-          className="px-3 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant text-[12px] font-semibold cursor-pointer shrink-0"
-        >
-          Проверить запрет на документы (403)
-        </button>
       </div>
 
       {activeTab === 'admin_structure' && (
@@ -236,17 +240,37 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
             </div>
           </div>
 
+          <div className="lg:col-span-5 flex flex-col gap-4">
+          <form onSubmit={handleCreateFaculty} className="bg-surface-container-lowest rounded-xl p-5 border border-outline-variant/50 flex flex-col gap-3">
+            <h3 className="font-display font-bold text-[16px]">Добавить факультет</h3>
+            <input required value={facultyName} onChange={(e) => setFacultyName(e.target.value)} placeholder="Название факультета" aria-label="Название факультета" className="rounded-lg border px-3 py-2" />
+            <input required value={facultyCode} onChange={(e) => setFacultyCode(e.target.value)} placeholder="Код факультета" aria-label="Код факультета" className="rounded-lg border px-3 py-2" />
+            <button type="submit" className="bg-primary text-white font-semibold py-2 rounded-lg">Создать факультет</button>
+          </form>
+          <form onSubmit={handleCreateDepartment} className="bg-surface-container-lowest rounded-xl p-5 border border-outline-variant/50 flex flex-col gap-3">
+            <h3 className="font-display font-bold text-[16px]">Добавить кафедру</h3>
+            <select required value={selectedFacultyId || faculties[0]?.id || ''} onChange={(e) => setSelectedFacultyId(e.target.value)} aria-label="Факультет кафедры" className="rounded-lg border px-3 py-2">
+              {faculties.length === 0 && <option value="">Сначала создайте факультет</option>}
+              {faculties.map((faculty) => <option key={faculty.id} value={faculty.id}>{faculty.name}</option>)}
+            </select>
+            <input required value={departmentName} onChange={(e) => setDepartmentName(e.target.value)} placeholder="Название кафедры" aria-label="Название кафедры" className="rounded-lg border px-3 py-2" />
+            <input required value={departmentCode} onChange={(e) => setDepartmentCode(e.target.value)} placeholder="Код кафедры" aria-label="Код кафедры" className="rounded-lg border px-3 py-2" />
+            <button type="submit" disabled={faculties.length === 0} className="bg-primary text-white font-semibold py-2 rounded-lg disabled:opacity-50">Создать кафедру</button>
+          </form>
           <form
             onSubmit={handleCreateGroup}
-            className="lg:col-span-5 bg-surface-container-lowest rounded-xl p-5 border border-outline-variant/50 flex flex-col gap-4"
+            className="bg-surface-container-lowest rounded-xl p-5 border border-outline-variant/50 flex flex-col gap-4"
           >
             <h3 className="font-display font-bold text-[16px]">Добавить учебную группу</h3>
+            <select required value={selectedDepartmentId || departments[0]?.id || ''} onChange={(e) => setSelectedDepartmentId(e.target.value)} aria-label="Кафедра группы" className="rounded-lg border px-3 py-2">
+              {departments.length === 0 && <option value="">Сначала создайте кафедру</option>}
+              {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+            </select>
             <label className="flex flex-col gap-1 text-[13px] font-medium">
               <span>Код группы</span>
               <input
-                type="password"
+                type="text"
                 required
-                minLength={12}
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
                 placeholder="Например: ИС-22-1"
@@ -264,11 +288,13 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
             </label>
             <button
               type="submit"
+              disabled={departments.length === 0}
               className="bg-primary text-on-primary font-semibold py-2 px-4 rounded-lg cursor-pointer"
             >
               Создать группу
             </button>
           </form>
+          </div>
         </div>
       )}
 
@@ -291,7 +317,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
                       {u.email} {u.groupName ? `· Группа ${u.groupName}` : ''}
                     </p>
                   </div>
-                  <button
+                  {u.role !== 'admin' && <button
                     type="button"
                     onClick={() => handleToggleUser(u)}
                     className={`px-3 py-1 rounded-lg text-[12px] font-semibold cursor-pointer ${
@@ -301,7 +327,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
                     }`}
                   >
                     {u.active ? 'Активен (откл.)' : 'Отключён (вкл.)'}
-                  </button>
+                  </button>}
                 </div>
               ))}
             </div>
@@ -330,7 +356,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
                 required
                 value={userEmail}
                 onChange={(e) => setUserEmail(e.target.value)}
-                placeholder="user@normocontrol.local"
+                placeholder="user@example.org"
                 className="rounded-lg border border-outline-variant px-3 py-2 text-[13px]"
               />
             </label>
@@ -343,14 +369,13 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
               >
                 <option value="student">Студент</option>
                 <option value="teacher">Преподаватель</option>
-                <option value="admin">Администратор</option>
               </select>
             </label>
             {userRole === 'student' && (
               <label className="flex flex-col gap-1 text-[13px] font-medium">
                 <span>Учебная группа</span>
                 <select
-                  value={userGroupId}
+                  value={userGroupId || groups[0]?.id || ''}
                   onChange={(e) => setUserGroupId(e.target.value)}
                   className="rounded-lg border border-outline-variant px-3 py-2 text-[13px] bg-white"
                 >
@@ -365,8 +390,9 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
             <label className="flex flex-col gap-1 text-[13px] font-medium">
               <span>Начальный пароль</span>
               <input
-                type="text"
+                type="password"
                 required
+                minLength={12}
                 value={userPassword}
                 onChange={(e) => setUserPassword(e.target.value)}
                 className="rounded-lg border border-outline-variant px-3 py-2 text-[13px] font-mono"
@@ -451,7 +477,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
             <label className="flex flex-col gap-1 text-[13px] font-medium">
               <span>Преподаватель</span>
               <select
-                value={taTeacherId}
+                value={taTeacherId || teachers[0]?.id || ''}
                 onChange={(e) => setTaTeacherId(e.target.value)}
                 className="rounded-lg border border-outline-variant px-3 py-2 text-[13px] bg-white"
               >
@@ -465,7 +491,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
             <label className="flex flex-col gap-1 text-[13px] font-medium">
               <span>Группа</span>
               <select
-                value={taGroupId}
+                value={taGroupId || groups[0]?.id || ''}
                 onChange={(e) => setTaGroupId(e.target.value)}
                 className="rounded-lg border border-outline-variant px-3 py-2 text-[13px] bg-white"
               >

@@ -1,0 +1,23 @@
+services:
+  app:
+    environment:
+      APP_URL: https://${DOMAIN:?Set DOMAIN in .env}
+  caddy:
+    image: caddy:2.9-alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -9,7 +9,7 @@ async function main() {
   }
   const repo = new PostgresRepository(url);
   await repo.runMigrations();
-  console.log('PostgreSQL migration 001_init.sql applied successfully.');
+  console.log('PostgreSQL migrations applied successfully.');
   process.exit(0);
 }
 

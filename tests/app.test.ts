@@ -89,6 +89,7 @@ before(async () => {
     uploadDir: tempUploadDir,
     sessionSecret: 'test-secret-key-for-automated-suite',
     allowDemoPreviewAccounts: true,
+    allowBearerAuth: true,
   });
 
   await new Promise<void>((resolve) => {
@@ -136,6 +137,55 @@ test('01 & 02: Strict group isolation for students and teachers', async () => {
   // Teacher 2 cannot inspect ИС-21-2 submission (sub-demo-1)
   const t2ReadS1 = await jsonReq('/api/submissions/sub-demo-1', { token: t2Token });
   assert.equal(t2ReadS1.status, 403);
+});
+
+test('Student draft survives reads and is isolated by student', async () => {
+  const owner = await loginAs('smailov@normocontrol.local');
+  const other = await loginAs('kasymova@normocontrol.local');
+  const assignments = await jsonReq('/api/assignments', { token: owner });
+  const assignmentId = String((assignments.json.assignments as Array<{ id: string }>)[0].id);
+  const draft = { snapshot: makeSampleSnapshot('Черновик сохранён'), replies: {}, mode: 'builder', idempotencyKey: 'idem-draft-test-123' };
+  const saved = await jsonReq(`/api/assignments/${assignmentId}/draft`, { method: 'PUT', token: owner, body: draft });
+  assert.equal(saved.status, 200);
+  const loaded = await jsonReq(`/api/assignments/${assignmentId}/draft`, { token: owner });
+  assert.equal((loaded.json.draft as { snapshot: { title: string } }).snapshot.title, 'Черновик сохранён');
+  const forbidden = await jsonReq(`/api/assignments/${assignmentId}/draft`, { token: other });
+  assert.equal(forbidden.status, 404);
+});
+
+test('Cookie session requires CSRF token and is revoked on logout', async () => {
+  const login = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'smailov@normocontrol.local', password: DEMO_PASSWORD_DEFAULT }),
+  });
+  assert.equal(login.status, 200);
+  const body = await login.json();
+  const cookie = login.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(cookie?.startsWith('ncc_session='));
+  if (!cookie) throw new Error('Missing session cookie');
+  assert.match(login.headers.get('set-cookie') || '', /HttpOnly/);
+  const me = await fetch(`${baseUrl}/api/auth/me`, { headers: { Cookie: cookie } });
+  assert.equal(me.status, 200);
+  const rejected = await fetch(`${baseUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie } });
+  assert.equal(rejected.status, 403);
+  const logout = await fetch(`${baseUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken } });
+  assert.equal(logout.status, 200);
+  const after = await fetch(`${baseUrl}/api/auth/me`, { headers: { Cookie: cookie } });
+  assert.equal(after.status, 401);
+});
+
+test('Password change revokes existing sessions', async () => {
+  await repo.createUser({ email: 'password-change@test.local', password: 'InitialPassword2026!', fullName: 'Password Test', shortName: 'P. Test', role: 'teacher', groupId: null, departmentId: null });
+  const login = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'password-change@test.local', password: 'InitialPassword2026!' }) });
+  assert.equal(login.status, 200);
+  const body = await login.json();
+  const cookie = login.headers.get('set-cookie')!.split(';')[0];
+  const change = await fetch(`${baseUrl}/api/auth/change-password`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': body.csrfToken, 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: 'InitialPassword2026!', newPassword: 'NewSecurePassword2026!' }) });
+  assert.equal(change.status, 200);
+  const oldSession = await fetch(`${baseUrl}/api/auth/me`, { headers: { Cookie: cookie } });
+  assert.equal(oldSession.status, 401);
+  const newLogin = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'password-change@test.local', password: 'NewSecurePassword2026!' }) });
+  assert.equal(newLogin.status, 200);
 });
 
 test('03: Admin is blocked (403) from reading or downloading student submissions', async () => {

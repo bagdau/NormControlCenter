@@ -25,7 +25,9 @@ async function bootstrap() {
   let repo: IRepository;
 
   if (databaseUrl) {
-    repo = new PostgresRepository(databaseUrl);
+    const pgRepo = new PostgresRepository(databaseUrl);
+    await pgRepo.runMigrations();
+    repo = pgRepo;
     const hc = await repo.healthCheck();
     if (!hc.dbReady) {
       console.error('[FATAL] Configured PostgreSQL is unavailable. Refusing to switch storage mode.');

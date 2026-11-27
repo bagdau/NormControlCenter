@@ -60,6 +60,14 @@ export interface SubmitVersionInput {
   replies?: { remarkId: string; replyText: string }[];
 }
 
+export interface StudentDraft {
+  snapshot: LabReportSnapshot;
+  replies: Record<string, string>;
+  mode: 'builder' | 'upload';
+  idempotencyKey: string;
+  updatedAt: string;
+}
+
 export interface IRepository {
   readonly mode: 'demo-in-memory' | 'postgresql';
   readonly persistsAcrossRestart: boolean;
@@ -73,11 +81,14 @@ export interface IRepository {
   createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;
   getSessionUser(tokenHash: string): Promise<UserRecord | null>;
   deleteSession(tokenHash: string): Promise<void>;
+  changeUserPassword(userId: string, newPassword: string): Promise<void>;
 
   // Structure & Admin
   listFaculties(): Promise<Faculty[]>;
   listDepartments(): Promise<Department[]>;
   listGroups(): Promise<StudyGroup[]>;
+  createFaculty(input: { name: string; code: string }): Promise<Faculty>;
+  createDepartment(input: { facultyId: string; name: string; code: string }): Promise<Department>;
   listUsers(): Promise<PublicUser[]>;
   listTeacherAssignments(): Promise<TeacherAssignment[]>;
   createGroup(input: { departmentId: string; name: string; yearLabel: string }): Promise<StudyGroup>;
@@ -133,6 +144,9 @@ export interface IRepository {
   }): Promise<Assignment>;
 
   // Submissions, Versions & Receipts
+  getStudentDraft(studentId: string, assignmentId: string): Promise<StudentDraft | null>;
+  saveStudentDraft(studentId: string, assignmentId: string, draft: Omit<StudentDraft, 'updatedAt'>): Promise<StudentDraft>;
+  deleteStudentDraft(studentId: string, assignmentId: string): Promise<void>;
   listStudentSubmissions(studentId: string): Promise<SubmissionBundle[]>;
   listTeacherQueue(teacherId: string): Promise<QueueRowView[]>;
   claimNextQueueSubmission(teacherId: string): Promise<QueueRowView | null>;
@@ -629,6 +643,7 @@ export class DemoRepository implements IRepository {
   private remarkPackages: RemarkPackage[];
   private auditLogs: AuditLog[];
   private sessions = new Map<string, { userId: string; expiresAt: string }>();
+  private studentDrafts = new Map<string, StudentDraft>();
   private receiptSeq = 8842;
 
   constructor() {
@@ -650,6 +665,20 @@ export class DemoRepository implements IRepository {
 
   async healthCheck() {
     return { ok: true, dbReady: true };
+  }
+
+  async getStudentDraft(studentId: string, assignmentId: string) {
+    return this.studentDrafts.get(`${studentId}:${assignmentId}`) || null;
+  }
+
+  async saveStudentDraft(studentId: string, assignmentId: string, draft: Omit<StudentDraft, 'updatedAt'>) {
+    const saved = { ...draft, updatedAt: new Date().toISOString() };
+    this.studentDrafts.set(`${studentId}:${assignmentId}`, saved);
+    return saved;
+  }
+
+  async deleteStudentDraft(studentId: string, assignmentId: string) {
+    this.studentDrafts.delete(`${studentId}:${assignmentId}`);
   }
 
   async findUserByEmail(email: string) {
@@ -697,6 +726,13 @@ export class DemoRepository implements IRepository {
     this.sessions.delete(tokenHash);
   }
 
+  async changeUserPassword(userId: string, newPassword: string) {
+    const user = this.users.find((item) => item.id === userId);
+    if (!user) throw new Error('User not found');
+    user.passwordHash = hashPassword(newPassword);
+    for (const [hash, session] of this.sessions) if (session.userId === userId) this.sessions.delete(hash);
+  }
+
   async listFaculties() {
     return [...this.faculties];
   }
@@ -713,7 +749,23 @@ export class DemoRepository implements IRepository {
     return [...this.teacherAssignments];
   }
 
+  async createFaculty(input: { name: string; code: string }) {
+    if (this.faculties.some((f) => f.code === input.code)) throw new Error('DUPLICATE_CODE');
+    const faculty: Faculty = { id: `fac-${crypto.randomUUID()}`, name: input.name, code: input.code };
+    this.faculties.push(faculty);
+    return faculty;
+  }
+
+  async createDepartment(input: { facultyId: string; name: string; code: string }) {
+    if (!this.faculties.some((f) => f.id === input.facultyId)) throw new Error('FACULTY_NOT_FOUND');
+    if (this.departments.some((d) => d.code === input.code)) throw new Error('DUPLICATE_CODE');
+    const department: Department = { id: `dep-${crypto.randomUUID()}`, ...input };
+    this.departments.push(department);
+    return department;
+  }
+
   async createGroup(input: { departmentId: string; name: string; yearLabel: string }) {
+    if (!this.departments.some((d) => d.id === input.departmentId)) throw new Error('DEPARTMENT_NOT_FOUND');
     const grp: StudyGroup = {
       id: `grp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       departmentId: input.departmentId,
@@ -1406,9 +1458,28 @@ export class PostgresRepository implements IRepository {
   }
 
   async runMigrations() {
-    const sqlPath = path.resolve(process.cwd(), 'db/migrations/001_init.sql');
-    const sql = fs.readFileSync(sqlPath, 'utf-8');
-    await this.pool.query(sql);
+    const client = await this.pool.connect();
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtext('normocontrol_migrations'))");
+      await client.query('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+      const dir = path.resolve(process.cwd(), 'db/migrations');
+      for (const name of fs.readdirSync(dir).filter((file) => /^\d+_.*\.sql$/.test(file)).sort()) {
+        const existing = await client.query('SELECT 1 FROM schema_migrations WHERE name = $1', [name]);
+        if (existing.rowCount) continue;
+        await client.query('BEGIN');
+        try {
+          await client.query(fs.readFileSync(path.join(dir, name), 'utf-8'));
+          await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [name]);
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        }
+      }
+    } finally {
+      await client.query("SELECT pg_advisory_unlock(hashtext('normocontrol_migrations'))");
+      client.release();
+    }
   }
 
   async seedIfEmpty() {
@@ -1652,6 +1723,21 @@ export class PostgresRepository implements IRepository {
     await this.pool.query('DELETE FROM sessions WHERE token_hash = $1', [tokenHash]);
   }
 
+  async changeUserPassword(userId: string, newPassword: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE users SET password_hash = $2 WHERE id = $1', [userId, hashPassword(newPassword)]);
+      await client.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async listFaculties() {
     const { rows } = await this.pool.query('SELECT id, name, code FROM faculties ORDER BY name');
     return rows;
@@ -1681,6 +1767,16 @@ export class PostgresRepository implements IRepository {
       'SELECT id, teacher_id AS "teacherId", group_id AS "groupId", discipline, active FROM teacher_assignments ORDER BY created_at'
     );
     return rows;
+  }
+
+  async createFaculty(input: { name: string; code: string }) {
+    const { rows } = await this.pool.query('INSERT INTO faculties (id, name, code) VALUES ($1,$2,$3) RETURNING id, name, code', [`fac-${crypto.randomUUID()}`, input.name, input.code]);
+    return rows[0] as Faculty;
+  }
+
+  async createDepartment(input: { facultyId: string; name: string; code: string }) {
+    const { rows } = await this.pool.query('INSERT INTO departments (id, faculty_id, name, code) VALUES ($1,$2,$3,$4) RETURNING id, faculty_id AS "facultyId", name, code', [`dep-${crypto.randomUUID()}`, input.facultyId, input.name, input.code]);
+    return rows[0] as Department;
   }
 
   async createGroup(input: { departmentId: string; name: string; yearLabel: string }) {
@@ -2040,6 +2136,38 @@ export class PostgresRepository implements IRepository {
     return { submission, assignment, student, groupName, versions, receipts, packages };
   }
 
+  async getStudentDraft(studentId: string, assignmentId: string): Promise<StudentDraft | null> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM student_drafts WHERE student_id = $1 AND assignment_id = $2',
+      [studentId, assignmentId]
+    );
+    if (!rows[0]) return null;
+    return {
+      snapshot: rows[0].snapshot_json as LabReportSnapshot,
+      replies: rows[0].replies_json as Record<string, string>,
+      mode: rows[0].mode as 'builder' | 'upload',
+      idempotencyKey: String(rows[0].idempotency_key),
+      updatedAt: new Date(String(rows[0].updated_at)).toISOString(),
+    };
+  }
+
+  async saveStudentDraft(studentId: string, assignmentId: string, draft: Omit<StudentDraft, 'updatedAt'>): Promise<StudentDraft> {
+    const { rows } = await this.pool.query(
+      `INSERT INTO student_drafts (student_id, assignment_id, snapshot_json, replies_json, mode, idempotency_key)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (student_id, assignment_id) DO UPDATE SET snapshot_json = EXCLUDED.snapshot_json,
+       replies_json = EXCLUDED.replies_json, mode = EXCLUDED.mode,
+       idempotency_key = EXCLUDED.idempotency_key, updated_at = NOW()
+       RETURNING updated_at`,
+      [studentId, assignmentId, JSON.stringify(draft.snapshot), JSON.stringify(draft.replies), draft.mode, draft.idempotencyKey]
+    );
+    return { ...draft, updatedAt: new Date(String(rows[0].updated_at)).toISOString() };
+  }
+
+  async deleteStudentDraft(studentId: string, assignmentId: string) {
+    await this.pool.query('DELETE FROM student_drafts WHERE student_id = $1 AND assignment_id = $2', [studentId, assignmentId]);
+  }
+
   async listStudentSubmissions(studentId: string) {
     const { rows } = await this.pool.query(
       'SELECT id FROM submissions WHERE student_id = $1 ORDER BY updated_at DESC',
@@ -2397,6 +2525,11 @@ export class PostgresRepository implements IRepository {
           [sub.assignmentId, input.resubmitDeadlineAt]
         );
       }
+      await client.query(
+        `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details_json)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [`aud-${crypto.randomUUID()}`, input.authorId, `Работа возвращена на доработку (пакет замечаний к v${sub.currentVersionNum})`, 'submission', input.submissionId, JSON.stringify({ resubmitDeadlineAt: input.resubmitDeadlineAt })]
+      );
       await client.query('COMMIT');
       return (await this.getSubmissionBundle(input.submissionId))!;
     } catch (err) {
@@ -2457,11 +2590,11 @@ export class PostgresRepository implements IRepository {
     };
   }
 
-  async approveInSystem(submissionId: string, _actorId: string) {
+  async approveInSystem(submissionId: string, actorId: string) {
     const client = await this.pool.connect();
     try {
     await client.query('BEGIN');
-    const subRes = await client.query('SELECT status FROM submissions WHERE id = $1 FOR UPDATE', [submissionId]);
+    const subRes = await client.query('SELECT status, current_version_num FROM submissions WHERE id = $1 FOR UPDATE', [submissionId]);
     if (!subRes.rows[0] || !['submitted', 'resubmitted', 'in_review'].includes(String(subRes.rows[0].status))) throw new Error('VERSION_CONFLICT');
     const openRes = await client.query(
       `SELECT r.id FROM remarks r
@@ -2476,6 +2609,11 @@ export class PostgresRepository implements IRepository {
     await client.query(
       `UPDATE submissions SET status = 'approved_in_system', updated_at = NOW() WHERE id = $1`,
       [submissionId]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details_json)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [`aud-${crypto.randomUUID()}`, actorId, `Статус установлен: Согласовано в системе (v${subRes.rows[0].current_version_num})`, 'submission', submissionId, '{}']
     );
     await client.query('COMMIT');
     return (await this.getSubmissionBundle(submissionId))!;
@@ -2495,7 +2633,7 @@ export class PostgresRepository implements IRepository {
     entityId: string;
     details?: Record<string, unknown>;
   }) {
-    const id = `aud-${Date.now()}`;
+    const id = `aud-${crypto.randomUUID()}`;
     const { rows } = await this.pool.query(
       `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details_json)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,

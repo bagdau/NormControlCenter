@@ -5,7 +5,7 @@ import {
   SessionExpiredError,
   api,
   formatAlmatyShortTime,
-  setAuthToken,
+  setCsrfToken,
 } from './api/client';
 import { AdminWorkspace } from './components/AdminWorkspace';
 import { HelpView } from './components/HelpView';
@@ -68,6 +68,7 @@ export default function App() {
   const [demoAccounts, setDemoAccounts] = useState<PublicUserDTO[]>([]);
   const [demoDefaultPassword, setDemoDefaultPassword] = useState<string>('');
   const [user, setUser] = useState<PublicUserDTO | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
   const [activeTab, setActiveTab] = useState<RoleNavTab>('student_assignments');
 
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
@@ -78,6 +79,9 @@ export default function App() {
     bundle: SubmissionBundleDTO;
   } | null>(null);
   const [shymkentTimeShort, setShymkentTimeShort] = useState(() => formatAlmatyShortTime());
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -96,6 +100,15 @@ export default function App() {
       window.removeEventListener('offline', onOffline);
       window.removeEventListener('online', onOnline);
     };
+  }, []);
+
+  useEffect(() => {
+    api.getMe().then((session) => {
+      setUser(session.user);
+      setActiveTab(DEFAULT_TAB_BY_ROLE[session.user.role]);
+    }).catch((err) => {
+      if (!(err instanceof SessionExpiredError)) setNetworkError('Не удалось проверить сессию. Проверьте подключение.');
+    }).finally(() => setAuthChecking(false));
   }, []);
 
   useEffect(() => {
@@ -127,7 +140,7 @@ export default function App() {
 
   const handleAuthError = (err: unknown) => {
     if (err instanceof SessionExpiredError) {
-      setAuthToken(null);
+      setCsrfToken(null);
       setUser(null);
       setSessionExpiredMessage(err.message);
       return;
@@ -156,6 +169,23 @@ export default function App() {
     setUser(null);
     setActiveReceiptState(null);
   };
+
+  const handleChangePassword = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    try {
+      await api.changePassword(currentPassword, newPassword);
+      setCsrfToken(null);
+      setUser(null);
+      setChangePasswordOpen(false);
+      setCurrentPassword('');
+      setNewPassword('');
+      setSessionExpiredMessage('Пароль изменён. Войдите заново.');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Не удалось изменить пароль.', 'error');
+    }
+  };
+
+  if (authChecking) return <div className="min-h-screen flex items-center justify-center" role="status">Проверка сессии…</div>;
 
   if (!user) {
     return (
@@ -217,6 +247,7 @@ export default function App() {
               {user.role} {user.groupName ? `· ${user.groupName}` : ''}
             </p>
           </div>
+          <button type="button" onClick={() => setChangePasswordOpen(true)} className="w-full py-2 px-3 rounded-lg border border-outline-variant text-[12px] font-semibold cursor-pointer">Сменить пароль</button>
           <button
             type="button"
             onClick={handleLogout}
@@ -265,6 +296,13 @@ export default function App() {
                 ҚАЗ
               </button>
             </div>
+            <button
+              type="button"
+              onClick={() => setChangePasswordOpen(true)}
+              className="lg:hidden px-2.5 py-1 rounded-lg border border-outline-variant text-[11px] font-semibold cursor-pointer"
+            >
+              Пароль
+            </button>
             <button
               type="button"
               onClick={handleLogout}
@@ -371,6 +409,16 @@ export default function App() {
       </nav>
 
       {/* Receipt Modal */}
+      {changePasswordOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" role="presentation">
+          <form onSubmit={handleChangePassword} role="dialog" aria-modal="true" aria-label="Смена пароля" className="bg-surface-container-lowest rounded-xl p-5 w-full max-w-sm flex flex-col gap-3">
+            <h2 className="font-display font-bold text-[18px]">Сменить пароль</h2>
+            <label className="text-[13px]">Текущий пароль<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-outline-variant px-3 py-2" /></label>
+            <label className="text-[13px]">Новый пароль (не менее 16 символов)<input type="password" autoComplete="new-password" minLength={16} required value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-outline-variant px-3 py-2" /></label>
+            <div className="flex gap-2 justify-end"><button type="button" onClick={() => setChangePasswordOpen(false)} className="px-3 py-2 rounded-lg border border-outline-variant">Отмена</button><button type="submit" className="px-3 py-2 rounded-lg bg-primary text-on-primary">Сохранить</button></div>
+          </form>
+        </div>
+      )}
       <ReceiptModal
         receipt={activeReceiptState?.receipt || null}
         studentName={activeReceiptState?.bundle.student.fullName}

@@ -2,14 +2,13 @@ name: normocontrolcenter
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: normocontrol-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: normocontrol
       POSTGRES_USER: normo
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U normo -d normocontrol"]
       interval: 5s
@@ -20,10 +19,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: normocontrol-app
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -31,13 +30,13 @@ services:
       DATABASE_URL: postgresql://normo:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/normocontrol
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
       UPLOAD_DIR: /app/storage/uploads
-      APP_URL: http://localhost:3000
+      APP_URL: ${APP_URL:-http://localhost:3000}
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
     volumes:
       - uploads_data:/app/storage/uploads
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>r.json()).then(j=>{if(!j.ok||!j.dbReady)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5

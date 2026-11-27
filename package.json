@@ -1,5 +1,5 @@
 {
-  "name": "react-example",
+  "name": "norm-control-center",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -12,6 +12,8 @@
     "lint": "tsc --noEmit",
     "db:migrate": "tsx db/migrate.ts",
     "db:seed": "tsx db/seed.ts",
+    "db:bootstrap-admin": "tsx db/bootstrap-admin.ts",
+    "db:reset-password": "tsx db/reset-password.ts",
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {

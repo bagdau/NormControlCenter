@@ -49,8 +49,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ lang, onToggleLang, health
         )}
         <form onSubmit={submit} className="flex flex-col gap-4">
           <h2 className="font-display font-semibold text-[22px] tracking-tight">{lang === 'kz' ? 'Жүйеге кіру' : 'Вход в систему'}</h2>
-          <label className="flex flex-col gap-1 text-[13px] font-medium">Email
-            <input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" className="rounded-xl border border-outline-variant px-3.5 py-2.5 bg-surface-container-low" />
+          <label className="flex flex-col gap-1 text-[13px] font-medium">Логин или email
+            <input type="text" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Логин или email" className="rounded-xl border border-outline-variant px-3.5 py-2.5 bg-surface-container-low" />
           </label>
           <label className="flex flex-col gap-1 text-[13px] font-medium">{lang === 'kz' ? 'Құпиясөз' : 'Пароль'}
             <input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="rounded-xl border border-outline-variant px-3.5 py-2.5 bg-surface-container-low" />
